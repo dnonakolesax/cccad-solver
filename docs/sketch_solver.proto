@@ -1,0 +1,383 @@
+syntax = "proto3";
+
+package cccad.solver.v1;
+
+option go_package = "github.com/cccad/cccad/proto/solver/v1;solverv1";
+
+// SketchSolver is a pure computational service.
+// It must not know anything about users, workspaces, Keycloak, permissions,
+// WebSocket sessions or database transactions.
+service SketchSolver {
+  // Solves the full sketch model and returns materialized geometry.
+  rpc Solve(SolveRequest) returns (SolveResponse);
+
+  // Checks constraint system validity and returns diagnostics without applying user intent.
+  rpc Check(CheckRequest) returns (CheckResponse);
+
+  // Applies a solver-level user intent, such as dragging a point or changing a driving dimension.
+  rpc ApplyIntent(ApplyIntentRequest) returns (ApplyIntentResponse);
+
+  // Analyzes constraint components, degrees of freedom and problematic regions.
+  rpc Analyze(AnalyzeRequest) returns (AnalyzeResponse);
+}
+
+message SolveRequest {
+  string sketch_id = 1;
+  int64 version = 2;
+  SketchModel model = 3;
+  SolverOptions options = 4;
+}
+
+message SolveResponse {
+  SolveStatus status = 1;
+  SketchSolution solution = 2;
+  repeated SolverDiagnostic diagnostics = 3;
+  int32 degrees_of_freedom = 4;
+}
+
+message CheckRequest {
+  SketchModel model = 1;
+  SolverOptions options = 2;
+}
+
+message CheckResponse {
+  SolveStatus status = 1;
+  int32 degrees_of_freedom = 2;
+  repeated SolverDiagnostic diagnostics = 3;
+}
+
+message ApplyIntentRequest {
+  SketchModel model = 1;
+  UserIntent intent = 2;
+  SolverOptions options = 3;
+}
+
+message ApplyIntentResponse {
+  SolveStatus status = 1;
+  SketchSolution solution = 2;
+  repeated string affected_entity_ids = 3;
+  repeated SolverDiagnostic diagnostics = 4;
+  int32 degrees_of_freedom = 5;
+}
+
+message AnalyzeRequest {
+  SketchModel model = 1;
+  SolverOptions options = 2;
+}
+
+message AnalyzeResponse {
+  SolveStatus status = 1;
+  int32 degrees_of_freedom = 2;
+  repeated ConstraintComponent components = 3;
+  repeated SolverDiagnostic diagnostics = 4;
+}
+
+message SketchModel {
+  repeated Entity entities = 1;
+  repeated Constraint constraints = 2;
+  repeated Dimension dimensions = 3;
+  repeated Parameter parameters = 4;
+}
+
+message Entity {
+  string id = 1;
+
+  oneof kind {
+    Point point = 10;
+    Line line = 11;
+    Circle circle = 12;
+    Arc arc = 13;
+  }
+}
+
+message Point {
+  double x = 1;
+  double y = 2;
+  bool fixed = 3;
+}
+
+message Line {
+  string start_point_id = 1;
+  string end_point_id = 2;
+}
+
+message Circle {
+  string center_point_id = 1;
+  double radius = 2;
+}
+
+message Arc {
+  string center_point_id = 1;
+  string start_point_id = 2;
+  string end_point_id = 3;
+  bool clockwise = 4;
+  ArcBranch branch = 5;
+}
+
+message Constraint {
+  string id = 1;
+  ConstraintStatus status = 2;
+
+  oneof kind {
+    CoincidentConstraint coincident = 10;
+    HorizontalConstraint horizontal = 11;
+    VerticalConstraint vertical = 12;
+    ParallelConstraint parallel = 13;
+    PerpendicularConstraint perpendicular = 14;
+    TangentConstraint tangent = 15;
+    EqualConstraint equal = 16;
+    FixedConstraint fixed = 17;
+    MidpointConstraint midpoint = 18;
+    ConcentricConstraint concentric = 19;
+  }
+}
+
+message CoincidentConstraint {
+  string point_a_id = 1;
+  string point_b_id = 2;
+}
+
+message HorizontalConstraint {
+  string line_id = 1;
+}
+
+message VerticalConstraint {
+  string line_id = 1;
+}
+
+message ParallelConstraint {
+  string line_a_id = 1;
+  string line_b_id = 2;
+}
+
+message PerpendicularConstraint {
+  string line_a_id = 1;
+  string line_b_id = 2;
+}
+
+message TangentConstraint {
+  string entity_a_id = 1;
+  string entity_b_id = 2;
+  TangentBranch branch = 3;
+}
+
+message EqualConstraint {
+  string entity_a_id = 1;
+  string entity_b_id = 2;
+  EqualKind kind = 3;
+}
+
+message FixedConstraint {
+  string entity_id = 1;
+}
+
+message MidpointConstraint {
+  string midpoint_id = 1;
+  string point_a_id = 2;
+  string point_b_id = 3;
+}
+
+message ConcentricConstraint {
+  string circle_a_id = 1;
+  string circle_b_id = 2;
+}
+
+message Dimension {
+  string id = 1;
+  bool driving = 2;
+  ConstraintStatus status = 3;
+
+  oneof kind {
+    DistanceDimension distance = 10;
+    RadiusDimension radius = 11;
+    DiameterDimension diameter = 12;
+    AngleDimension angle = 13;
+  }
+}
+
+message DistanceDimension {
+  string ref_a_id = 1;
+  string ref_b_id = 2;
+  double value = 3;
+  DistanceReferenceKind ref_kind = 4;
+}
+
+message RadiusDimension {
+  string entity_id = 1;
+  double value = 2;
+}
+
+message DiameterDimension {
+  string entity_id = 1;
+  double value = 2;
+}
+
+message AngleDimension {
+  string line_a_id = 1;
+  string line_b_id = 2;
+  double value_rad = 3;
+  AngleOrientation orientation = 4;
+}
+
+message Parameter {
+  string id = 1;
+  double value = 2;
+  ParameterKind kind = 3;
+}
+
+message UserIntent {
+  oneof kind {
+    MovePointIntent move_point = 1;
+    MoveEntityIntent move_entity = 2;
+    SetDimensionIntent set_dimension = 3;
+    AddConstraintIntent add_constraint = 4;
+  }
+}
+
+message MovePointIntent {
+  string point_id = 1;
+  Vec2 target = 2;
+  double weight = 3;
+}
+
+message MoveEntityIntent {
+  string entity_id = 1;
+  Vec2 delta = 2;
+  double weight = 3;
+}
+
+message SetDimensionIntent {
+  string dimension_id = 1;
+  double value = 2;
+}
+
+message AddConstraintIntent {
+  Constraint constraint = 1;
+}
+
+message SketchSolution {
+  repeated SolvedEntity entities = 1;
+}
+
+message SolvedEntity {
+  string id = 1;
+
+  oneof kind {
+    SolvedPoint point = 10;
+    SolvedCircle circle = 11;
+    SolvedArc arc = 12;
+  }
+}
+
+message SolvedPoint {
+  double x = 1;
+  double y = 2;
+}
+
+message SolvedCircle {
+  string center_point_id = 1;
+  double radius = 2;
+}
+
+message SolvedArc {
+  string center_point_id = 1;
+  string start_point_id = 2;
+  string end_point_id = 3;
+  bool clockwise = 4;
+  ArcBranch branch = 5;
+}
+
+message Vec2 {
+  double x = 1;
+  double y = 2;
+}
+
+message SolverOptions {
+  double tolerance = 1;
+  int32 max_iterations = 2;
+  bool deterministic = 3;
+  bool return_diagnostics = 4;
+  double soft_intent_weight = 5;
+  double stability_weight = 6;
+}
+
+message SolverDiagnostic {
+  SolverDiagnosticLevel level = 1;
+  string code = 2;
+  string message = 3;
+  repeated string entity_ids = 4;
+  repeated string constraint_ids = 5;
+  repeated string dimension_ids = 6;
+}
+
+message ConstraintComponent {
+  string id = 1;
+  repeated string entity_ids = 2;
+  repeated string constraint_ids = 3;
+  repeated string dimension_ids = 4;
+  int32 degrees_of_freedom = 5;
+  SolveStatus status = 6;
+}
+
+enum SolveStatus {
+  SOLVE_STATUS_UNSPECIFIED = 0;
+  SOLVE_STATUS_OK = 1;
+  SOLVE_STATUS_UNDER_CONSTRAINED = 2;
+  SOLVE_STATUS_FULLY_CONSTRAINED = 3;
+  SOLVE_STATUS_OVER_CONSTRAINED = 4;
+  SOLVE_STATUS_INCONSISTENT = 5;
+  SOLVE_STATUS_NUMERICAL_FAILURE = 6;
+}
+
+enum SolverDiagnosticLevel {
+  SOLVER_DIAGNOSTIC_LEVEL_UNSPECIFIED = 0;
+  SOLVER_DIAGNOSTIC_LEVEL_INFO = 1;
+  SOLVER_DIAGNOSTIC_LEVEL_WARNING = 2;
+  SOLVER_DIAGNOSTIC_LEVEL_ERROR = 3;
+}
+
+enum ConstraintStatus {
+  CONSTRAINT_STATUS_UNSPECIFIED = 0;
+  CONSTRAINT_STATUS_ACTIVE = 1;
+  CONSTRAINT_STATUS_SUPPRESSED = 2;
+  CONSTRAINT_STATUS_INVALID = 3;
+  CONSTRAINT_STATUS_DELETED = 4;
+}
+
+enum TangentBranch {
+  TANGENT_BRANCH_UNSPECIFIED = 0;
+  TANGENT_BRANCH_EXTERNAL = 1;
+  TANGENT_BRANCH_INTERNAL = 2;
+}
+
+enum ArcBranch {
+  ARC_BRANCH_UNSPECIFIED = 0;
+  ARC_BRANCH_MINOR = 1;
+  ARC_BRANCH_MAJOR = 2;
+}
+
+enum AngleOrientation {
+  ANGLE_ORIENTATION_UNSPECIFIED = 0;
+  ANGLE_ORIENTATION_CW = 1;
+  ANGLE_ORIENTATION_CCW = 2;
+}
+
+enum EqualKind {
+  EQUAL_KIND_UNSPECIFIED = 0;
+  EQUAL_KIND_LENGTH = 1;
+  EQUAL_KIND_RADIUS = 2;
+}
+
+enum DistanceReferenceKind {
+  DISTANCE_REFERENCE_KIND_UNSPECIFIED = 0;
+  DISTANCE_REFERENCE_KIND_POINT_POINT = 1;
+  DISTANCE_REFERENCE_KIND_POINT_LINE = 2;
+  DISTANCE_REFERENCE_KIND_LINE_LINE = 3;
+}
+
+enum ParameterKind {
+  PARAMETER_KIND_UNSPECIFIED = 0;
+  PARAMETER_KIND_LENGTH = 1;
+  PARAMETER_KIND_ANGLE = 2;
+  PARAMETER_KIND_SCALAR = 3;
+}
