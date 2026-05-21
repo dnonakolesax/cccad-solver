@@ -1,9 +1,10 @@
+#include <grpcpp/grpcpp.h>
+
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <string>
-
-#include <grpcpp/grpcpp.h>
 
 #include "cccad/solver/sketch_solver_engine.h"
 #include "cccad/solver/sketch_solver_service.h"
@@ -25,7 +26,7 @@ int ReadMaxRequestBytes() {
   }
 
   char* end = nullptr;
-  const long parsed = std::strtol(value, &end, 10);
+  const int64_t parsed = std::strtoll(value, &end, 10);
   if (end == value || *end != '\0' || parsed <= 0) {
     return 16 * 1024 * 1024;
   }

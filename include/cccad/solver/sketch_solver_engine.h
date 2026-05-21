@@ -43,7 +43,12 @@ class SketchSolverEngine {
   void ValidateIntent(const cccad::solver::v1::UserIntent& intent,
                       const cccad::solver::v1::SketchModel& model,
                       ValidationResult* result) const;
-  int32_t EstimateDegreesOfFreedom(const cccad::solver::v1::SketchModel& model) const;
+  int32_t EstimateDegreesOfFreedom(
+      const cccad::solver::v1::SketchModel& model,
+      const cccad::solver::v1::SolverOptions& options,
+      const std::vector<std::string>& entity_ids = {},
+      const std::vector<std::string>& constraint_ids = {},
+      const std::vector<std::string>& dimension_ids = {}) const;
   cccad::solver::v1::SolveStatus StatusForDegreesOfFreedom(int32_t degrees_of_freedom) const;
   void CopyModelToSolution(const cccad::solver::v1::SketchModel& model,
                            cccad::solver::v1::SketchSolution* solution) const;

@@ -266,6 +266,8 @@ message SolvedEntity {
     SolvedPoint point = 10;
     SolvedCircle circle = 11;
     SolvedArc arc = 12;
+    // Added after point/circle/arc to preserve existing wire numbers.
+    SolvedLine line = 13;
   }
 }
 
@@ -277,6 +279,11 @@ message SolvedPoint {
 message SolvedCircle {
   string center_point_id = 1;
   double radius = 2;
+}
+
+message SolvedLine {
+  string start_point_id = 1;
+  string end_point_id = 2;
 }
 
 message SolvedArc {

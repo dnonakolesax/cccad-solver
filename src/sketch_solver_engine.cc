@@ -2,12 +2,18 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
+#include <vector>
+
+#include "cccad/solver/constraint_graph.h"
+#include "cccad/solver/stage1_solver.h"
 
 namespace cccad::solver {
 namespace {
@@ -37,7 +43,7 @@ std::optional<std::size_t> ReadSizeLimit(const char* name) {
   }
 
   char* end = nullptr;
-  const unsigned long parsed = std::strtoul(value, &end, 10);
+  const uint64_t parsed = std::strtoull(value, &end, 10);
   if (end == value || *end != '\0') {
     return std::nullopt;
   }
@@ -51,7 +57,7 @@ std::optional<int32_t> ReadIntLimit(const char* name) {
   }
 
   char* end = nullptr;
-  const long parsed = std::strtol(value, &end, 10);
+  const int64_t parsed = std::strtoll(value, &end, 10);
   if (end == value || *end != '\0' || parsed < 0 ||
       parsed > std::numeric_limits<int32_t>::max()) {
     return std::nullopt;
@@ -93,9 +99,24 @@ void SketchSolverEngine::Solve(const cccad::solver::v1::SolveRequest& request,
     return;
   }
 
-  CopyModelToSolution(request.model(), response->mutable_solution());
-  const int32_t degrees_of_freedom = EstimateDegreesOfFreedom(request.model());
+  Stage1SolveResult solve_result = SolveStage1Model(
+      request.model(), BuildStage1Model(request.model()), request.options(),
+      limits_.default_max_iterations);
+  WriteStage1Solution(request.model(), solve_result.model, response->mutable_solution());
+  for (const auto& diagnostic : solve_result.residual_diagnostics) {
+    *response->add_diagnostics() = diagnostic;
+  }
+
+  const int32_t degrees_of_freedom = solve_result.degrees_of_freedom;
   response->set_degrees_of_freedom(degrees_of_freedom);
+  if (!solve_result.converged) {
+    AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "numerical_failure",
+                     "stage 1 solver did not converge to the requested tolerance", {}, {}, {},
+                     &validation);
+    *response->add_diagnostics() = validation.diagnostics.back();
+    response->set_status(cccad::solver::v1::SOLVE_STATUS_NUMERICAL_FAILURE);
+    return;
+  }
   response->set_status(StatusForDegreesOfFreedom(degrees_of_freedom));
 }
 
@@ -111,7 +132,8 @@ void SketchSolverEngine::Check(const cccad::solver::v1::CheckRequest& request,
     return;
   }
 
-  const int32_t degrees_of_freedom = EstimateDegreesOfFreedom(request.model());
+  const int32_t degrees_of_freedom =
+      EstimateDegreesOfFreedom(request.model(), request.options());
   response->set_degrees_of_freedom(degrees_of_freedom);
   response->set_status(StatusForDegreesOfFreedom(degrees_of_freedom));
 }
@@ -130,23 +152,61 @@ void SketchSolverEngine::ApplyIntent(
     return;
   }
 
-  CopyModelToSolution(request.model(), response->mutable_solution());
+  ConstraintGraph graph(request.model());
+  const ConstraintComponentData affected_component = graph.ComponentForSeed(graph.SeedForIntent(request.intent()));
+
+  Stage1Model stage_model = BuildStage1Model(request.model());
   switch (request.intent().kind_case()) {
-    case cccad::solver::v1::UserIntent::kMovePoint:
-      response->add_affected_entity_ids(request.intent().move_point().point_id());
+    case cccad::solver::v1::UserIntent::kMovePoint: {
+      auto point_it = stage_model.points.find(request.intent().move_point().point_id());
+      if (point_it != stage_model.points.end()) {
+        point_it->second.x = request.intent().move_point().target().x();
+        point_it->second.y = request.intent().move_point().target().y();
+        stage_model.intent_anchors.push_back(IntentAnchor{
+            .point_id = request.intent().move_point().point_id(),
+            .x = request.intent().move_point().target().x(),
+            .y = request.intent().move_point().target().y(),
+            .weight = request.intent().move_point().weight()});
+      }
       break;
+    }
     case cccad::solver::v1::UserIntent::kMoveEntity:
-      response->add_affected_entity_ids(request.intent().move_entity().entity_id());
+      // Stage 1 reports the affected graph component. Full rigid entity move is a later intent implementation.
       break;
     case cccad::solver::v1::UserIntent::kSetDimension:
+      stage_model.dimension_value_overrides[request.intent().set_dimension().dimension_id()] =
+          request.intent().set_dimension().value();
+      break;
     case cccad::solver::v1::UserIntent::kAddConstraint:
+      stage_model.extra_constraints.push_back(&request.intent().add_constraint().constraint());
+      break;
     case cccad::solver::v1::UserIntent::KIND_NOT_SET:
       break;
   }
+
+  Stage1SolveResult solve_result = SolveStage1Model(request.model(), std::move(stage_model),
+                                                    request.options(),
+                                                    limits_.default_max_iterations);
+  WriteStage1Solution(request.model(), solve_result.model, response->mutable_solution());
+  for (const auto& diagnostic : solve_result.residual_diagnostics) {
+    *response->add_diagnostics() = diagnostic;
+  }
+
+  for (const auto& entity_id : affected_component.entity_ids) {
+    response->add_affected_entity_ids(entity_id);
+  }
   SortRepeatedStrings(response->mutable_affected_entity_ids());
 
-  const int32_t degrees_of_freedom = EstimateDegreesOfFreedom(request.model());
+  const int32_t degrees_of_freedom = solve_result.degrees_of_freedom;
   response->set_degrees_of_freedom(degrees_of_freedom);
+  if (!solve_result.converged) {
+    AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "numerical_failure",
+                     "stage 1 solver did not converge to the requested tolerance", {}, {}, {},
+                     &validation);
+    *response->add_diagnostics() = validation.diagnostics.back();
+    response->set_status(cccad::solver::v1::SOLVE_STATUS_NUMERICAL_FAILURE);
+    return;
+  }
   response->set_status(StatusForDegreesOfFreedom(degrees_of_freedom));
 }
 
@@ -162,30 +222,20 @@ void SketchSolverEngine::Analyze(const cccad::solver::v1::AnalyzeRequest& reques
     return;
   }
 
-  const int32_t degrees_of_freedom = EstimateDegreesOfFreedom(request.model());
+  const int32_t degrees_of_freedom =
+      EstimateDegreesOfFreedom(request.model(), request.options());
   response->set_degrees_of_freedom(degrees_of_freedom);
   response->set_status(StatusForDegreesOfFreedom(degrees_of_freedom));
 
-  auto* component = response->add_components();
-  component->set_id("component:0");
-  component->set_degrees_of_freedom(degrees_of_freedom);
-  component->set_status(response->status());
-  for (const auto& entity : request.model().entities()) {
-    component->add_entity_ids(entity.id());
+  ConstraintGraph graph(request.model());
+  for (const auto& component : graph.Components()) {
+    ConstraintComponentData rank_component = component;
+    rank_component.degrees_of_freedom =
+        EstimateDegreesOfFreedom(request.model(), request.options(), component.entity_ids,
+                                 component.constraint_ids, component.dimension_ids);
+    rank_component.status = StatusForDegreesOfFreedom(rank_component.degrees_of_freedom);
+    CopyComponentToProto(rank_component, response->add_components());
   }
-  for (const auto& constraint : request.model().constraints()) {
-    if (IsActive(constraint.status())) {
-      component->add_constraint_ids(constraint.id());
-    }
-  }
-  for (const auto& dimension : request.model().dimensions()) {
-    if (IsActive(dimension.status())) {
-      component->add_dimension_ids(dimension.id());
-    }
-  }
-  SortRepeatedStrings(component->mutable_entity_ids());
-  SortRepeatedStrings(component->mutable_constraint_ids());
-  SortRepeatedStrings(component->mutable_dimension_ids());
 }
 
 SketchSolverEngine::ValidationResult SketchSolverEngine::ValidateModel(
@@ -456,7 +506,7 @@ void SketchSolverEngine::ValidateIntent(const cccad::solver::v1::UserIntent& int
     case cccad::solver::v1::UserIntent::kMovePoint:
       if (!Contains(entity_ids, intent.move_point().point_id())) {
         AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent_reference",
-                         "move point intent must reference an existing point", 
+                         "move point intent must reference an existing point",
                          {intent.move_point().point_id()}, {}, {}, result);
       }
       if (!IsFinite(intent.move_point().target().x()) ||
@@ -504,45 +554,26 @@ void SketchSolverEngine::ValidateIntent(const cccad::solver::v1::UserIntent& int
 }
 
 int32_t SketchSolverEngine::EstimateDegreesOfFreedom(
-    const cccad::solver::v1::SketchModel& model) const {
-  int32_t degrees = 0;
-  for (const auto& entity : model.entities()) {
-    switch (entity.kind_case()) {
-      case cccad::solver::v1::Entity::kPoint:
-        degrees += entity.point().fixed() ? 0 : 2;
-        break;
-      case cccad::solver::v1::Entity::kCircle:
-        degrees += 1;
-        break;
-      case cccad::solver::v1::Entity::kLine:
-      case cccad::solver::v1::Entity::kArc:
-      case cccad::solver::v1::Entity::KIND_NOT_SET:
-        break;
-    }
+    const cccad::solver::v1::SketchModel& model,
+    const cccad::solver::v1::SolverOptions& options,
+    const std::vector<std::string>& entity_ids,
+    const std::vector<std::string>& constraint_ids,
+    const std::vector<std::string>& dimension_ids) const {
+  std::vector<std::string> scoped_entity_ids = entity_ids;
+  std::vector<std::string> scoped_constraint_ids = constraint_ids;
+  std::vector<std::string> scoped_dimension_ids = dimension_ids;
+  if (scoped_entity_ids.empty() && scoped_constraint_ids.empty() && scoped_dimension_ids.empty()) {
+    for (const auto& entity : model.entities()) scoped_entity_ids.push_back(entity.id());
+    for (const auto& constraint : model.constraints()) scoped_constraint_ids.push_back(constraint.id());
+    for (const auto& dimension : model.dimensions()) scoped_dimension_ids.push_back(dimension.id());
   }
-
-  for (const auto& constraint : model.constraints()) {
-    if (IsActive(constraint.status())) {
-      degrees -= 1;
-    }
-  }
-  for (const auto& dimension : model.dimensions()) {
-    if (IsActive(dimension.status()) && dimension.driving()) {
-      degrees -= 1;
-    }
-  }
-  return degrees;
+  return EstimateStage1DegreesOfFreedom(model, BuildStage1Model(model), options, scoped_entity_ids,
+                                        scoped_constraint_ids, scoped_dimension_ids);
 }
 
 cccad::solver::v1::SolveStatus SketchSolverEngine::StatusForDegreesOfFreedom(
     int32_t degrees_of_freedom) const {
-  if (degrees_of_freedom < 0) {
-    return SOLVE_STATUS_OVER_CONSTRAINED;
-  }
-  if (degrees_of_freedom == 0) {
-    return SOLVE_STATUS_FULLY_CONSTRAINED;
-  }
-  return SOLVE_STATUS_UNDER_CONSTRAINED;
+  return ConstraintGraph::StatusForDegreesOfFreedom(degrees_of_freedom);
 }
 
 void SketchSolverEngine::CopyModelToSolution(
@@ -578,6 +609,9 @@ void SketchSolverEngine::CopyModelToSolution(
         solved->mutable_arc()->set_branch(entity->arc().branch());
         break;
       case cccad::solver::v1::Entity::kLine:
+        solved->mutable_line()->set_start_point_id(entity->line().start_point_id());
+        solved->mutable_line()->set_end_point_id(entity->line().end_point_id());
+        break;
       case cccad::solver::v1::Entity::KIND_NOT_SET:
         break;
     }
