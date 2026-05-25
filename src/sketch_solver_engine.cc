@@ -184,9 +184,12 @@ void SketchSolverEngine::ApplyIntent(
       break;
   }
 
-  SolverResult solve_result = SolveModel(request.model(), std::move(solver_model),
-                                                    request.options(),
-                                                    limits_.default_max_iterations);
+  SolverResult solve_result = SolveModelScoped(request.model(), std::move(solver_model),
+                                               request.options(),
+                                               limits_.default_max_iterations,
+                                               affected_component.entity_ids,
+                                               affected_component.constraint_ids,
+                                               affected_component.dimension_ids);
   WriteSolverSolution(request.model(), solve_result.model, response->mutable_solution());
   for (const auto& diagnostic : solve_result.residual_diagnostics) {
     *response->add_diagnostics() = diagnostic;
@@ -566,6 +569,19 @@ SketchSolverEngine::ValidationResult SketchSolverEngine::ValidateModel(
                            message, {entity_id}, {}, {dimension_id}, &result);
         }
       };
+  auto require_dimension_reference_round =
+      [&](const std::string& entity_id, std::string_view message,
+          const std::string& dimension_id) {
+        const auto kind_it = entity_kinds.find(entity_id);
+        if (kind_it == entity_kinds.end()) {
+          return;
+        }
+        if (kind_it->second != cccad::solver::v1::Entity::kCircle &&
+            kind_it->second != cccad::solver::v1::Entity::kArc) {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_dimension_reference",
+                           message, {entity_id}, {}, {dimension_id}, &result);
+        }
+      };
   for (const auto& dimension : model.dimensions()) {
     if (dimension.id().empty()) {
       AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_dimension",
@@ -637,6 +653,9 @@ SketchSolverEngine::ValidationResult SketchSolverEngine::ValidateModel(
                            "radius dimension value must be finite and positive", {}, {},
                            {dimension.id()}, &result);
         }
+        require_dimension_reference_round(
+            dimension.radius().entity_id(),
+            "radius dimension reference must be a circle or arc entity", dimension.id());
         break;
       case cccad::solver::v1::Dimension::kDiameter:
         references = {dimension.diameter().entity_id()};
@@ -645,6 +664,9 @@ SketchSolverEngine::ValidationResult SketchSolverEngine::ValidateModel(
                            "diameter dimension value must be finite and positive", {}, {},
                            {dimension.id()}, &result);
         }
+        require_dimension_reference_round(
+            dimension.diameter().entity_id(),
+            "diameter dimension reference must be a circle or arc entity", dimension.id());
         break;
       case cccad::solver::v1::Dimension::kAngle:
         references = {dimension.angle().line_a_id(), dimension.angle().line_b_id()};

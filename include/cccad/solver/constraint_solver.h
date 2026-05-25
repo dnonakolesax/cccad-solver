@@ -73,6 +73,13 @@ SolverResult SolveModel(const cccad::solver::v1::SketchModel& proto_model,
                                    SolverModel initial_model,
                                    const cccad::solver::v1::SolverOptions& options,
                                    int32_t default_max_iterations);
+SolverResult SolveModelScoped(const cccad::solver::v1::SketchModel& proto_model,
+                              SolverModel initial_model,
+                              const cccad::solver::v1::SolverOptions& options,
+                              int32_t default_max_iterations,
+                              const std::vector<std::string>& entity_ids,
+                              const std::vector<std::string>& constraint_ids,
+                              const std::vector<std::string>& dimension_ids);
 int32_t EstimateSolverDegreesOfFreedom(
     const cccad::solver::v1::SketchModel& proto_model,
     const SolverModel& model,

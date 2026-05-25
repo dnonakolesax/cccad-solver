@@ -353,6 +353,110 @@ void CircleRadiusDimensionIsSolved() {
   Require(std::abs(radius - 8.0) < 1e-5, "radius dimension should be solved");
 }
 
+void ArcRadiusDimensionIsSolved() {
+  SolveRequest request;
+  auto* center = request.mutable_model()->add_entities();
+  center->set_id("center");
+  center->mutable_point()->set_x(0.0);
+  center->mutable_point()->set_y(0.0);
+  center->mutable_point()->set_fixed(true);
+  auto* start = request.mutable_model()->add_entities();
+  start->set_id("start");
+  start->mutable_point()->set_x(2.0);
+  start->mutable_point()->set_y(0.0);
+  auto* end = request.mutable_model()->add_entities();
+  end->set_id("end");
+  end->mutable_point()->set_x(0.0);
+  end->mutable_point()->set_y(2.0);
+
+  auto* arc = request.mutable_model()->add_entities();
+  arc->set_id("arc");
+  arc->mutable_arc()->set_center_point_id("center");
+  arc->mutable_arc()->set_start_point_id("start");
+  arc->mutable_arc()->set_end_point_id("end");
+
+  auto* dimension = request.mutable_model()->add_dimensions();
+  dimension->set_id("arc_radius");
+  dimension->set_driving(true);
+  dimension->mutable_radius()->set_entity_id("arc");
+  dimension->mutable_radius()->set_value(6.0);
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double sx = 0.0;
+  double sy = 0.0;
+  double ex = 0.0;
+  double ey = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "start") {
+      sx = entity.point().x();
+      sy = entity.point().y();
+    } else if (entity.id() == "end") {
+      ex = entity.point().x();
+      ey = entity.point().y();
+    }
+  }
+  Require(response.status() != SOLVE_STATUS_NUMERICAL_FAILURE,
+          "arc radius dimension should converge");
+  Require(std::abs(std::sqrt(sx * sx + sy * sy) - 6.0) < 1e-5,
+          "arc radius dimension should solve start radius");
+  Require(std::abs(std::sqrt(ex * ex + ey * ey) - 6.0) < 1e-5,
+          "arc radius dimension should keep end radius consistent");
+}
+
+void ArcDiameterDimensionIsSolved() {
+  SolveRequest request;
+  auto* center = request.mutable_model()->add_entities();
+  center->set_id("center");
+  center->mutable_point()->set_x(0.0);
+  center->mutable_point()->set_y(0.0);
+  center->mutable_point()->set_fixed(true);
+  auto* start = request.mutable_model()->add_entities();
+  start->set_id("start");
+  start->mutable_point()->set_x(2.0);
+  start->mutable_point()->set_y(0.0);
+  auto* end = request.mutable_model()->add_entities();
+  end->set_id("end");
+  end->mutable_point()->set_x(0.0);
+  end->mutable_point()->set_y(2.0);
+
+  auto* arc = request.mutable_model()->add_entities();
+  arc->set_id("arc");
+  arc->mutable_arc()->set_center_point_id("center");
+  arc->mutable_arc()->set_start_point_id("start");
+  arc->mutable_arc()->set_end_point_id("end");
+
+  auto* dimension = request.mutable_model()->add_dimensions();
+  dimension->set_id("arc_diameter");
+  dimension->set_driving(true);
+  dimension->mutable_diameter()->set_entity_id("arc");
+  dimension->mutable_diameter()->set_value(10.0);
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double sx = 0.0;
+  double sy = 0.0;
+  double ex = 0.0;
+  double ey = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "start") {
+      sx = entity.point().x();
+      sy = entity.point().y();
+    } else if (entity.id() == "end") {
+      ex = entity.point().x();
+      ey = entity.point().y();
+    }
+  }
+  Require(response.status() != SOLVE_STATUS_NUMERICAL_FAILURE,
+          "arc diameter dimension should converge");
+  Require(std::abs(std::sqrt(sx * sx + sy * sy) - 5.0) < 1e-5,
+          "arc diameter dimension should solve start radius");
+  Require(std::abs(std::sqrt(ex * ex + ey * ey) - 5.0) < 1e-5,
+          "arc diameter dimension should keep end radius consistent");
+}
+
 void LineCircleTangentConstraintIsSolved() {
   SolveRequest request;
   auto* a = request.mutable_model()->add_entities();
@@ -1254,6 +1358,59 @@ void ApplyIntentReportsAffectedComponentOnly() {
   Require(!has_isolated, "affected ids should not include disconnected entities");
 }
 
+void ApplyIntentSolvesOnlyAffectedComponent() {
+  ApplyIntentRequest request;
+  auto* moved = request.mutable_model()->add_entities();
+  moved->set_id("moved");
+  moved->mutable_point()->set_x(0.0);
+  moved->mutable_point()->set_y(0.0);
+
+  auto* anchor = request.mutable_model()->add_entities();
+  anchor->set_id("anchor");
+  anchor->mutable_point()->set_x(0.0);
+  anchor->mutable_point()->set_y(10.0);
+  anchor->mutable_point()->set_fixed(true);
+  auto* unrelated = request.mutable_model()->add_entities();
+  unrelated->set_id("unrelated");
+  unrelated->mutable_point()->set_x(1.0);
+  unrelated->mutable_point()->set_y(10.0);
+
+  auto* dimension = request.mutable_model()->add_dimensions();
+  dimension->set_id("unrelated_distance");
+  dimension->set_driving(true);
+  dimension->mutable_distance()->set_ref_a_id("anchor");
+  dimension->mutable_distance()->set_ref_b_id("unrelated");
+  dimension->mutable_distance()->set_ref_kind(cccad::solver::v1::DISTANCE_REFERENCE_KIND_POINT_POINT);
+  dimension->mutable_distance()->set_value(10.0);
+
+  request.mutable_intent()->mutable_move_point()->set_point_id("moved");
+  request.mutable_intent()->mutable_move_point()->mutable_target()->set_x(2.0);
+  request.mutable_intent()->mutable_move_point()->mutable_target()->set_y(3.0);
+  request.mutable_intent()->mutable_move_point()->set_weight(100.0);
+
+  ApplyIntentResponse response;
+  SketchSolverEngine{}.ApplyIntent(request, &response);
+
+  double moved_x = 0.0;
+  double moved_y = 0.0;
+  double unrelated_x = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "moved") {
+      moved_x = entity.point().x();
+      moved_y = entity.point().y();
+    } else if (entity.id() == "unrelated") {
+      unrelated_x = entity.point().x();
+    }
+  }
+
+  Require(response.status() != SOLVE_STATUS_NUMERICAL_FAILURE,
+          "scoped apply intent should not fail on unrelated unsolved components");
+  Require(std::abs(moved_x - 2.0) < 1e-5 && std::abs(moved_y - 3.0) < 1e-5,
+          "scoped apply intent should solve the moved point");
+  Require(std::abs(unrelated_x - 1.0) < 1e-5,
+          "scoped apply intent should leave disconnected dimensions unsolved");
+}
+
 void RedundantConstraintsUseJacobianRankForDof() {
   CheckRequest request;
   auto* a = request.mutable_model()->add_entities();
@@ -1339,6 +1496,8 @@ int main() {
   LineLineDistanceDimensionIsSolved();
   AngleDimensionIsSolved();
   CircleRadiusDimensionIsSolved();
+  ArcRadiusDimensionIsSolved();
+  ArcDiameterDimensionIsSolved();
   LineCircleTangentConstraintIsSolved();
   ExternalCircleCircleTangentConstraintIsSolved();
   InternalCircleCircleTangentConstraintIsSolved();
@@ -1359,6 +1518,7 @@ int main() {
   SolvedLineIsReturned();
   AnalyzeReturnsRealComponents();
   ApplyIntentReportsAffectedComponentOnly();
+  ApplyIntentSolvesOnlyAffectedComponent();
   RedundantConstraintsUseJacobianRankForDof();
   UnsatisfiedDimensionReturnsResidualDiagnostic();
   return 0;

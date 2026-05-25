@@ -429,8 +429,12 @@ void AddArcResiduals(const SolverModel& model,
 }
 
 void AddDiagnosticArcResiduals(const SolverModel& model,
-                               std::vector<ResidualEntry>* residuals) {
+                               std::vector<ResidualEntry>* residuals,
+                               const std::unordered_set<std::string>* entity_scope = nullptr) {
   for (const auto& [arc_id, arc] : model.arcs) {
+    if (!ScopeContains(entity_scope, arc_id)) {
+      continue;
+    }
     const auto residual = ArcRadiusConsistencyResidual(model, arc);
     if (!residual.has_value()) {
       continue;
@@ -699,12 +703,12 @@ void AddDiagnosticDimensionResiduals(const cccad::solver::v1::Dimension& dimensi
       break;
     }
     case cccad::solver::v1::Dimension::kRadius: {
-      const auto circle_it = model.circles.find(dimension.radius().entity_id());
-      if (circle_it == model.circles.end()) {
+      const auto round = GetRoundGeometry(model, dimension.radius().entity_id());
+      if (!round.has_value()) {
         return;
       }
       const double target = DimensionTarget(dimension, model, dimension.radius().value());
-      AddResidualEntry(residuals, circle_it->second.radius - target,
+      AddResidualEntry(residuals, round->radius - target,
                        {.code = "dimension_residual",
                         .message = "radius dimension residual is above tolerance",
                         .entity_ids = {dimension.radius().entity_id()},
@@ -712,12 +716,12 @@ void AddDiagnosticDimensionResiduals(const cccad::solver::v1::Dimension& dimensi
       break;
     }
     case cccad::solver::v1::Dimension::kDiameter: {
-      const auto circle_it = model.circles.find(dimension.diameter().entity_id());
-      if (circle_it == model.circles.end()) {
+      const auto round = GetRoundGeometry(model, dimension.diameter().entity_id());
+      if (!round.has_value()) {
         return;
       }
       const double target = DimensionTarget(dimension, model, dimension.diameter().value()) * 0.5;
-      AddResidualEntry(residuals, circle_it->second.radius - target,
+      AddResidualEntry(residuals, round->radius - target,
                        {.code = "dimension_residual",
                         .message = "diameter dimension residual is above tolerance",
                         .entity_ids = {dimension.diameter().entity_id()},
@@ -926,21 +930,21 @@ void AddDimensionResiduals(const cccad::solver::v1::Dimension& dimension,
       break;
     }
     case cccad::solver::v1::Dimension::kRadius: {
-      const auto circle_it = model.circles.find(dimension.radius().entity_id());
-      if (circle_it == model.circles.end()) {
+      const auto round = GetRoundGeometry(model, dimension.radius().entity_id());
+      if (!round.has_value()) {
         return;
       }
       const double target = DimensionTarget(dimension, model, dimension.radius().value());
-      AddScaledResidual(residuals, circle_it->second.radius - target);
+      AddScaledResidual(residuals, round->radius - target);
       break;
     }
     case cccad::solver::v1::Dimension::kDiameter: {
-      const auto circle_it = model.circles.find(dimension.diameter().entity_id());
-      if (circle_it == model.circles.end()) {
+      const auto round = GetRoundGeometry(model, dimension.diameter().entity_id());
+      if (!round.has_value()) {
         return;
       }
       const double target = DimensionTarget(dimension, model, dimension.diameter().value()) * 0.5;
-      AddScaledResidual(residuals, circle_it->second.radius - target);
+      AddScaledResidual(residuals, round->radius - target);
       break;
     }
     case cccad::solver::v1::Dimension::kAngle: {
@@ -1026,10 +1030,11 @@ std::vector<ResidualEntry> EvaluateDiagnosticResiduals(
     const SolverModel& model,
     const cccad::solver::v1::SolverOptions& options,
     const std::unordered_set<std::string>* constraint_scope = nullptr,
-    const std::unordered_set<std::string>* dimension_scope = nullptr) {
+    const std::unordered_set<std::string>* dimension_scope = nullptr,
+    const std::unordered_set<std::string>* entity_scope = nullptr) {
   (void)options;
   std::vector<ResidualEntry> residuals;
-  AddDiagnosticArcResiduals(model, &residuals);
+  AddDiagnosticArcResiduals(model, &residuals, entity_scope);
   for (const auto& constraint : proto_model.constraints()) {
     if (!ScopeContains(constraint_scope, constraint.id())) {
       continue;
@@ -1333,10 +1338,14 @@ SolverModel BuildSolverModel(const cccad::solver::v1::SketchModel& model) {
   return result;
 }
 
-SolverResult SolveModel(const cccad::solver::v1::SketchModel& proto_model,
-                                   SolverModel initial_model,
-                                   const cccad::solver::v1::SolverOptions& options,
-                                   int32_t default_max_iterations) {
+SolverResult SolveModelWithScopes(
+    const cccad::solver::v1::SketchModel& proto_model,
+    SolverModel initial_model,
+    const cccad::solver::v1::SolverOptions& options,
+    int32_t default_max_iterations,
+    const std::unordered_set<std::string>* entity_scope,
+    const std::unordered_set<std::string>* constraint_scope,
+    const std::unordered_set<std::string>* dimension_scope) {
   SolverResult result;
   result.model = std::move(initial_model);
   const int32_t max_iterations = options.max_iterations() > 0 ? options.max_iterations()
@@ -1346,19 +1355,59 @@ SolverResult SolveModel(const cccad::solver::v1::SketchModel& proto_model,
                                : kDefaultTolerance;
   auto finalize = [&]() {
     const std::vector<double> hard_residuals =
-        EvaluateResiduals(proto_model, result.model, options, false);
+        EvaluateResiduals(proto_model, result.model, options, false, constraint_scope,
+                          dimension_scope, entity_scope);
     const double hard_residual_norm = std::sqrt(SquaredNorm(hard_residuals));
     result.converged = hard_residual_norm <= std::max(1e-5, tolerance * 10.0);
     result.degrees_of_freedom =
-        EstimateRankDegreesOfFreedom(proto_model, result.model, options, nullptr, nullptr, nullptr,
-                                     &result.jacobian_rank);
-    result.residual_diagnostics =
-        BuildResidualDiagnostics(proto_model, result.model, options);
+        EstimateRankDegreesOfFreedom(proto_model, result.model, options, entity_scope,
+                                     constraint_scope, dimension_scope, &result.jacobian_rank);
+    const double diagnostic_threshold = std::max(1e-5, tolerance * 10.0);
+    result.residual_diagnostics.clear();
+    for (auto& residual : EvaluateDiagnosticResiduals(proto_model, result.model, options,
+                                                      constraint_scope, dimension_scope,
+                                                      entity_scope)) {
+      if (std::abs(residual.value) <= diagnostic_threshold) {
+        continue;
+      }
+      SortStrings(&residual.diagnostic.entity_ids);
+      SortStrings(&residual.diagnostic.constraint_ids);
+      SortStrings(&residual.diagnostic.dimension_ids);
+      auto* diagnostic = &result.residual_diagnostics.emplace_back();
+      diagnostic->set_level(cccad::solver::v1::SOLVER_DIAGNOSTIC_LEVEL_ERROR);
+      diagnostic->set_code(residual.diagnostic.code);
+      diagnostic->set_message(residual.diagnostic.message);
+      for (const auto& entity_id : residual.diagnostic.entity_ids) {
+        diagnostic->add_entity_ids(entity_id);
+      }
+      for (const auto& constraint_id : residual.diagnostic.constraint_ids) {
+        diagnostic->add_constraint_ids(constraint_id);
+      }
+      for (const auto& dimension_id : residual.diagnostic.dimension_ids) {
+        diagnostic->add_dimension_ids(dimension_id);
+      }
+    }
+    std::sort(result.residual_diagnostics.begin(), result.residual_diagnostics.end(),
+              [](const auto& lhs, const auto& rhs) {
+                if (lhs.code() != rhs.code()) return lhs.code() < rhs.code();
+                if (lhs.message() != rhs.message()) return lhs.message() < rhs.message();
+                if (!RepeatedStringsEqual(lhs.entity_ids(), rhs.entity_ids())) {
+                  return std::lexicographical_compare(lhs.entity_ids().begin(), lhs.entity_ids().end(),
+                                                      rhs.entity_ids().begin(), rhs.entity_ids().end());
+                }
+                if (!RepeatedStringsEqual(lhs.constraint_ids(), rhs.constraint_ids())) {
+                  return std::lexicographical_compare(lhs.constraint_ids().begin(), lhs.constraint_ids().end(),
+                                                      rhs.constraint_ids().begin(), rhs.constraint_ids().end());
+                }
+                return std::lexicographical_compare(lhs.dimension_ids().begin(), lhs.dimension_ids().end(),
+                                                    rhs.dimension_ids().begin(), rhs.dimension_ids().end());
+              });
   };
 
-  const std::vector<SolverVariable> variables = BuildVariables(result.model);
+  const std::vector<SolverVariable> variables = BuildVariables(result.model, entity_scope);
   if (variables.empty()) {
-    const auto residuals = EvaluateResiduals(proto_model, result.model, options);
+    const auto residuals = EvaluateResiduals(proto_model, result.model, options, true,
+                                            constraint_scope, dimension_scope, entity_scope);
     result.residual_norm = std::sqrt(SquaredNorm(residuals));
     result.converged = result.residual_norm <= std::max(1e-7, tolerance * 10.0);
     finalize();
@@ -1370,7 +1419,9 @@ SolverResult SolveModel(const cccad::solver::v1::SketchModel& proto_model,
 
   for (int32_t iteration = 0; iteration < max_iterations; ++iteration) {
     WriteVariables(&result.model, variables, x);
-    const std::vector<double> residuals = EvaluateResiduals(proto_model, result.model, options);
+    const std::vector<double> residuals =
+        EvaluateResiduals(proto_model, result.model, options, true, constraint_scope,
+                          dimension_scope, entity_scope);
     const double current_cost = SquaredNorm(residuals);
     result.residual_norm = std::sqrt(current_cost);
     result.iterations = iteration + 1;
@@ -1391,7 +1442,9 @@ SolverResult SolveModel(const cccad::solver::v1::SketchModel& proto_model,
       x_eps[col] += h;
       SolverModel perturbed = result.model;
       WriteVariables(&perturbed, variables, x_eps);
-      const std::vector<double> residuals_eps = EvaluateResiduals(proto_model, perturbed, options);
+      const std::vector<double> residuals_eps =
+          EvaluateResiduals(proto_model, perturbed, options, true, constraint_scope,
+                            dimension_scope, entity_scope);
 
       std::vector<double> j_col(m, 0.0);
       for (std::size_t row = 0; row < m; ++row) {
@@ -1406,7 +1459,8 @@ SolverResult SolveModel(const cccad::solver::v1::SketchModel& proto_model,
         SolverModel perturbed_other = result.model;
         WriteVariables(&perturbed_other, variables, x_eps_other);
         const std::vector<double> residuals_eps_other =
-            EvaluateResiduals(proto_model, perturbed_other, options);
+            EvaluateResiduals(proto_model, perturbed_other, options, true, constraint_scope,
+                              dimension_scope, entity_scope);
 
         double value = 0.0;
         for (std::size_t row = 0; row < m; ++row) {
@@ -1442,7 +1496,9 @@ SolverResult SolveModel(const cccad::solver::v1::SketchModel& proto_model,
 
     SolverModel candidate_model = result.model;
     WriteVariables(&candidate_model, variables, candidate);
-    const double candidate_cost = SquaredNorm(EvaluateResiduals(proto_model, candidate_model, options));
+    const double candidate_cost =
+        SquaredNorm(EvaluateResiduals(proto_model, candidate_model, options, true,
+                                      constraint_scope, dimension_scope, entity_scope));
     if (candidate_cost <= current_cost) {
       x = std::move(candidate);
       result.model = std::move(candidate_model);
@@ -1459,10 +1515,35 @@ SolverResult SolveModel(const cccad::solver::v1::SketchModel& proto_model,
   }
 
   WriteVariables(&result.model, variables, x);
-  result.residual_norm = std::sqrt(SquaredNorm(EvaluateResiduals(proto_model, result.model, options)));
+  result.residual_norm =
+      std::sqrt(SquaredNorm(EvaluateResiduals(proto_model, result.model, options, true,
+                                             constraint_scope, dimension_scope, entity_scope)));
   result.converged = result.residual_norm <= std::max(1e-7, tolerance * 10.0);
   finalize();
   return result;
+}
+
+SolverResult SolveModel(const cccad::solver::v1::SketchModel& proto_model,
+                        SolverModel initial_model,
+                        const cccad::solver::v1::SolverOptions& options,
+                        int32_t default_max_iterations) {
+  return SolveModelWithScopes(proto_model, std::move(initial_model), options,
+                              default_max_iterations, nullptr, nullptr, nullptr);
+}
+
+SolverResult SolveModelScoped(const cccad::solver::v1::SketchModel& proto_model,
+                              SolverModel initial_model,
+                              const cccad::solver::v1::SolverOptions& options,
+                              int32_t default_max_iterations,
+                              const std::vector<std::string>& entity_ids,
+                              const std::vector<std::string>& constraint_ids,
+                              const std::vector<std::string>& dimension_ids) {
+  const std::unordered_set<std::string> entity_scope = MakeScopeSet(entity_ids);
+  const std::unordered_set<std::string> constraint_scope = MakeScopeSet(constraint_ids);
+  const std::unordered_set<std::string> dimension_scope = MakeScopeSet(dimension_ids);
+  return SolveModelWithScopes(proto_model, std::move(initial_model), options,
+                              default_max_iterations, &entity_scope, &constraint_scope,
+                              &dimension_scope);
 }
 
 int32_t EstimateSolverDegreesOfFreedom(
