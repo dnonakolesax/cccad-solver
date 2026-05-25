@@ -16,7 +16,7 @@ struct IntentAnchor {
   double weight = 1.0;
 };
 
-struct Stage1Point {
+struct SolverPoint {
   std::string id;
   double x = 0.0;
   double y = 0.0;
@@ -26,7 +26,7 @@ struct Stage1Point {
   bool lock_y = false;
 };
 
-struct Stage1Circle {
+struct SolverCircle {
   std::string id;
   std::string center_point_id;
   double radius = 1.0;
@@ -34,24 +34,32 @@ struct Stage1Circle {
   bool lock_radius = false;
 };
 
-struct Stage1Line {
+struct SolverLine {
   std::string id;
   std::string start_point_id;
   std::string end_point_id;
 };
 
-struct Stage1Model {
-  std::unordered_map<std::string, Stage1Point> points;
-  std::unordered_map<std::string, Stage1Circle> circles;
-  std::unordered_map<std::string, Stage1Line> lines;
+struct SolverArc {
+  std::string id;
+  std::string center_point_id;
+  std::string start_point_id;
+  std::string end_point_id;
+};
+
+struct SolverModel {
+  std::unordered_map<std::string, SolverPoint> points;
+  std::unordered_map<std::string, SolverCircle> circles;
+  std::unordered_map<std::string, SolverLine> lines;
+  std::unordered_map<std::string, SolverArc> arcs;
   std::unordered_map<std::string, cccad::solver::v1::Entity::KindCase> entity_kinds;
   std::vector<const cccad::solver::v1::Constraint*> extra_constraints;
   std::unordered_map<std::string, double> dimension_value_overrides;
   std::vector<IntentAnchor> intent_anchors;
 };
 
-struct Stage1SolveResult {
-  Stage1Model model;
+struct SolverResult {
+  SolverModel model;
   bool converged = true;
   double residual_norm = 0.0;
   int32_t iterations = 0;
@@ -60,24 +68,24 @@ struct Stage1SolveResult {
   std::vector<cccad::solver::v1::SolverDiagnostic> residual_diagnostics;
 };
 
-Stage1Model BuildStage1Model(const cccad::solver::v1::SketchModel& model);
-Stage1SolveResult SolveStage1Model(const cccad::solver::v1::SketchModel& proto_model,
-                                   Stage1Model initial_model,
+SolverModel BuildSolverModel(const cccad::solver::v1::SketchModel& model);
+SolverResult SolveModel(const cccad::solver::v1::SketchModel& proto_model,
+                                   SolverModel initial_model,
                                    const cccad::solver::v1::SolverOptions& options,
                                    int32_t default_max_iterations);
-int32_t EstimateStage1DegreesOfFreedom(
+int32_t EstimateSolverDegreesOfFreedom(
     const cccad::solver::v1::SketchModel& proto_model,
-    const Stage1Model& model,
+    const SolverModel& model,
     const cccad::solver::v1::SolverOptions& options,
     const std::vector<std::string>& entity_ids = {},
     const std::vector<std::string>& constraint_ids = {},
     const std::vector<std::string>& dimension_ids = {});
-std::vector<cccad::solver::v1::SolverDiagnostic> BuildStage1ResidualDiagnostics(
+std::vector<cccad::solver::v1::SolverDiagnostic> BuildResidualDiagnostics(
     const cccad::solver::v1::SketchModel& proto_model,
-    const Stage1Model& model,
+    const SolverModel& model,
     const cccad::solver::v1::SolverOptions& options);
-void WriteStage1Solution(const cccad::solver::v1::SketchModel& proto_model,
-                         const Stage1Model& model,
+void WriteSolverSolution(const cccad::solver::v1::SketchModel& proto_model,
+                         const SolverModel& model,
                          cccad::solver::v1::SketchSolution* solution);
 
 }  // namespace cccad::solver

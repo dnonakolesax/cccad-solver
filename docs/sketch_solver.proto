@@ -129,6 +129,8 @@ message Constraint {
     FixedConstraint fixed = 17;
     MidpointConstraint midpoint = 18;
     ConcentricConstraint concentric = 19;
+    PointOnLineConstraint point_on_line = 20;
+    PointOnCircleConstraint point_on_circle = 21;
   }
 }
 
@@ -180,6 +182,16 @@ message MidpointConstraint {
 message ConcentricConstraint {
   string circle_a_id = 1;
   string circle_b_id = 2;
+}
+
+message PointOnLineConstraint {
+  string point_id = 1;
+  string line_id = 2;
+}
+
+message PointOnCircleConstraint {
+  string point_id = 1;
+  string circle_id = 2;
 }
 
 message Dimension {

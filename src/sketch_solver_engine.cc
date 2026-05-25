@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "cccad/solver/constraint_graph.h"
-#include "cccad/solver/stage1_solver.h"
+#include "cccad/solver/constraint_solver.h"
 
 namespace cccad::solver {
 namespace {
@@ -99,10 +99,10 @@ void SketchSolverEngine::Solve(const cccad::solver::v1::SolveRequest& request,
     return;
   }
 
-  Stage1SolveResult solve_result = SolveStage1Model(
-      request.model(), BuildStage1Model(request.model()), request.options(),
+  SolverResult solve_result = SolveModel(
+      request.model(), BuildSolverModel(request.model()), request.options(),
       limits_.default_max_iterations);
-  WriteStage1Solution(request.model(), solve_result.model, response->mutable_solution());
+  WriteSolverSolution(request.model(), solve_result.model, response->mutable_solution());
   for (const auto& diagnostic : solve_result.residual_diagnostics) {
     *response->add_diagnostics() = diagnostic;
   }
@@ -111,7 +111,7 @@ void SketchSolverEngine::Solve(const cccad::solver::v1::SolveRequest& request,
   response->set_degrees_of_freedom(degrees_of_freedom);
   if (!solve_result.converged) {
     AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "numerical_failure",
-                     "stage 1 solver did not converge to the requested tolerance", {}, {}, {},
+                     "solver did not converge to the requested tolerance", {}, {}, {},
                      &validation);
     *response->add_diagnostics() = validation.diagnostics.back();
     response->set_status(cccad::solver::v1::SOLVE_STATUS_NUMERICAL_FAILURE);
@@ -155,14 +155,14 @@ void SketchSolverEngine::ApplyIntent(
   ConstraintGraph graph(request.model());
   const ConstraintComponentData affected_component = graph.ComponentForSeed(graph.SeedForIntent(request.intent()));
 
-  Stage1Model stage_model = BuildStage1Model(request.model());
+  SolverModel solver_model = BuildSolverModel(request.model());
   switch (request.intent().kind_case()) {
     case cccad::solver::v1::UserIntent::kMovePoint: {
-      auto point_it = stage_model.points.find(request.intent().move_point().point_id());
-      if (point_it != stage_model.points.end()) {
+      auto point_it = solver_model.points.find(request.intent().move_point().point_id());
+      if (point_it != solver_model.points.end()) {
         point_it->second.x = request.intent().move_point().target().x();
         point_it->second.y = request.intent().move_point().target().y();
-        stage_model.intent_anchors.push_back(IntentAnchor{
+        solver_model.intent_anchors.push_back(IntentAnchor{
             .point_id = request.intent().move_point().point_id(),
             .x = request.intent().move_point().target().x(),
             .y = request.intent().move_point().target().y(),
@@ -171,23 +171,23 @@ void SketchSolverEngine::ApplyIntent(
       break;
     }
     case cccad::solver::v1::UserIntent::kMoveEntity:
-      // Stage 1 reports the affected graph component. Full rigid entity move is a later intent implementation.
+      // The solver reports the affected graph component. Full rigid entity move is a later intent implementation.
       break;
     case cccad::solver::v1::UserIntent::kSetDimension:
-      stage_model.dimension_value_overrides[request.intent().set_dimension().dimension_id()] =
+      solver_model.dimension_value_overrides[request.intent().set_dimension().dimension_id()] =
           request.intent().set_dimension().value();
       break;
     case cccad::solver::v1::UserIntent::kAddConstraint:
-      stage_model.extra_constraints.push_back(&request.intent().add_constraint().constraint());
+      solver_model.extra_constraints.push_back(&request.intent().add_constraint().constraint());
       break;
     case cccad::solver::v1::UserIntent::KIND_NOT_SET:
       break;
   }
 
-  Stage1SolveResult solve_result = SolveStage1Model(request.model(), std::move(stage_model),
+  SolverResult solve_result = SolveModel(request.model(), std::move(solver_model),
                                                     request.options(),
                                                     limits_.default_max_iterations);
-  WriteStage1Solution(request.model(), solve_result.model, response->mutable_solution());
+  WriteSolverSolution(request.model(), solve_result.model, response->mutable_solution());
   for (const auto& diagnostic : solve_result.residual_diagnostics) {
     *response->add_diagnostics() = diagnostic;
   }
@@ -201,7 +201,7 @@ void SketchSolverEngine::ApplyIntent(
   response->set_degrees_of_freedom(degrees_of_freedom);
   if (!solve_result.converged) {
     AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "numerical_failure",
-                     "stage 1 solver did not converge to the requested tolerance", {}, {}, {},
+                     "solver did not converge to the requested tolerance", {}, {}, {},
                      &validation);
     *response->add_diagnostics() = validation.diagnostics.back();
     response->set_status(cccad::solver::v1::SOLVE_STATUS_NUMERICAL_FAILURE);
@@ -347,6 +347,43 @@ SketchSolverEngine::ValidationResult SketchSolverEngine::ValidateModel(
 
   std::unordered_set<std::string> constraint_ids;
   constraint_ids.reserve(static_cast<std::size_t>(model.constraints_size()));
+  auto require_constraint_reference_kind =
+      [&](const std::string& entity_id, cccad::solver::v1::Entity::KindCase expected_kind,
+          std::string_view message, const std::string& constraint_id) {
+        const auto kind_it = entity_kinds.find(entity_id);
+        if (kind_it == entity_kinds.end()) {
+          return;
+        }
+        if (kind_it->second != expected_kind) {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_constraint_reference",
+                           message, {entity_id}, {constraint_id}, {}, &result);
+        }
+      };
+  auto require_constraint_reference_round =
+      [&](const std::string& entity_id, std::string_view message,
+          const std::string& constraint_id) {
+        const auto kind_it = entity_kinds.find(entity_id);
+        if (kind_it == entity_kinds.end()) {
+          return;
+        }
+        if (kind_it->second != cccad::solver::v1::Entity::kCircle &&
+            kind_it->second != cccad::solver::v1::Entity::kArc) {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_constraint_reference",
+                           message, {entity_id}, {constraint_id}, {}, &result);
+        }
+      };
+  auto is_line = [&](const std::string& entity_id) {
+    const auto kind_it = entity_kinds.find(entity_id);
+    return kind_it != entity_kinds.end() &&
+           kind_it->second == cccad::solver::v1::Entity::kLine;
+  };
+  auto is_round = [&](const std::string& entity_id) {
+    const auto kind_it = entity_kinds.find(entity_id);
+    return kind_it != entity_kinds.end() &&
+           (kind_it->second == cccad::solver::v1::Entity::kCircle ||
+            kind_it->second == cccad::solver::v1::Entity::kArc);
+  };
+
   for (const auto& constraint : model.constraints()) {
     if (constraint.id().empty()) {
       AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_constraint",
@@ -369,25 +406,89 @@ SketchSolverEngine::ValidationResult SketchSolverEngine::ValidateModel(
     switch (constraint.kind_case()) {
       case cccad::solver::v1::Constraint::kCoincident:
         references = {constraint.coincident().point_a_id(), constraint.coincident().point_b_id()};
+        require_constraint_reference_kind(
+            constraint.coincident().point_a_id(), cccad::solver::v1::Entity::kPoint,
+            "coincident constraint references must be point entities", constraint.id());
+        require_constraint_reference_kind(
+            constraint.coincident().point_b_id(), cccad::solver::v1::Entity::kPoint,
+            "coincident constraint references must be point entities", constraint.id());
         break;
       case cccad::solver::v1::Constraint::kHorizontal:
         references = {constraint.horizontal().line_id()};
+        require_constraint_reference_kind(
+            constraint.horizontal().line_id(), cccad::solver::v1::Entity::kLine,
+            "horizontal constraint reference must be a line entity", constraint.id());
         break;
       case cccad::solver::v1::Constraint::kVertical:
         references = {constraint.vertical().line_id()};
+        require_constraint_reference_kind(
+            constraint.vertical().line_id(), cccad::solver::v1::Entity::kLine,
+            "vertical constraint reference must be a line entity", constraint.id());
         break;
       case cccad::solver::v1::Constraint::kParallel:
         references = {constraint.parallel().line_a_id(), constraint.parallel().line_b_id()};
+        require_constraint_reference_kind(
+            constraint.parallel().line_a_id(), cccad::solver::v1::Entity::kLine,
+            "parallel constraint references must be line entities", constraint.id());
+        require_constraint_reference_kind(
+            constraint.parallel().line_b_id(), cccad::solver::v1::Entity::kLine,
+            "parallel constraint references must be line entities", constraint.id());
         break;
       case cccad::solver::v1::Constraint::kPerpendicular:
         references = {constraint.perpendicular().line_a_id(),
                       constraint.perpendicular().line_b_id()};
+        require_constraint_reference_kind(
+            constraint.perpendicular().line_a_id(), cccad::solver::v1::Entity::kLine,
+            "perpendicular constraint references must be line entities", constraint.id());
+        require_constraint_reference_kind(
+            constraint.perpendicular().line_b_id(), cccad::solver::v1::Entity::kLine,
+            "perpendicular constraint references must be line entities", constraint.id());
         break;
       case cccad::solver::v1::Constraint::kTangent:
         references = {constraint.tangent().entity_a_id(), constraint.tangent().entity_b_id()};
+        if (Contains(entity_ids, constraint.tangent().entity_a_id()) &&
+            Contains(entity_ids, constraint.tangent().entity_b_id())) {
+          const bool supported_line_round =
+              (is_line(constraint.tangent().entity_a_id()) &&
+               is_round(constraint.tangent().entity_b_id())) ||
+              (is_round(constraint.tangent().entity_a_id()) &&
+               is_line(constraint.tangent().entity_b_id()));
+          const bool supported_round_round =
+              is_round(constraint.tangent().entity_a_id()) &&
+              is_round(constraint.tangent().entity_b_id());
+          if (!supported_line_round && !supported_round_round) {
+            AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR,
+                             "invalid_constraint_reference",
+                             "tangent constraint references must be line-circle or circle-circle compatible entities",
+                             {constraint.tangent().entity_a_id(),
+                              constraint.tangent().entity_b_id()},
+                             {constraint.id()}, {}, &result);
+          }
+        }
         break;
       case cccad::solver::v1::Constraint::kEqual:
         references = {constraint.equal().entity_a_id(), constraint.equal().entity_b_id()};
+        if (constraint.equal().kind() == cccad::solver::v1::EQUAL_KIND_UNSPECIFIED) {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_constraint",
+                           "equal constraint kind must be length or radius", {}, {constraint.id()},
+                           {}, &result);
+        } else if (constraint.equal().kind() == cccad::solver::v1::EQUAL_KIND_LENGTH) {
+          require_constraint_reference_kind(
+              constraint.equal().entity_a_id(), cccad::solver::v1::Entity::kLine,
+              "equal length constraint references must be line entities", constraint.id());
+          require_constraint_reference_kind(
+              constraint.equal().entity_b_id(), cccad::solver::v1::Entity::kLine,
+              "equal length constraint references must be line entities", constraint.id());
+        } else if (constraint.equal().kind() == cccad::solver::v1::EQUAL_KIND_RADIUS) {
+          require_constraint_reference_round(
+              constraint.equal().entity_a_id(),
+              "equal radius constraint references must be circle or arc entities",
+              constraint.id());
+          require_constraint_reference_round(
+              constraint.equal().entity_b_id(),
+              "equal radius constraint references must be circle or arc entities",
+              constraint.id());
+        }
         break;
       case cccad::solver::v1::Constraint::kFixed:
         references = {constraint.fixed().entity_id()};
@@ -395,10 +496,49 @@ SketchSolverEngine::ValidationResult SketchSolverEngine::ValidateModel(
       case cccad::solver::v1::Constraint::kMidpoint:
         references = {constraint.midpoint().midpoint_id(), constraint.midpoint().point_a_id(),
                       constraint.midpoint().point_b_id()};
+        require_constraint_reference_kind(
+            constraint.midpoint().midpoint_id(), cccad::solver::v1::Entity::kPoint,
+            "midpoint constraint references must be point entities", constraint.id());
+        require_constraint_reference_kind(
+            constraint.midpoint().point_a_id(), cccad::solver::v1::Entity::kPoint,
+            "midpoint constraint references must be point entities", constraint.id());
+        require_constraint_reference_kind(
+            constraint.midpoint().point_b_id(), cccad::solver::v1::Entity::kPoint,
+            "midpoint constraint references must be point entities", constraint.id());
         break;
       case cccad::solver::v1::Constraint::kConcentric:
         references = {constraint.concentric().circle_a_id(),
                       constraint.concentric().circle_b_id()};
+        require_constraint_reference_round(
+            constraint.concentric().circle_a_id(),
+            "concentric constraint references must be circle or arc entities", constraint.id());
+        require_constraint_reference_round(
+            constraint.concentric().circle_b_id(),
+            "concentric constraint references must be circle or arc entities", constraint.id());
+        break;
+      case cccad::solver::v1::Constraint::kPointOnLine:
+        references = {constraint.point_on_line().point_id(),
+                      constraint.point_on_line().line_id()};
+        require_constraint_reference_kind(
+            constraint.point_on_line().point_id(), cccad::solver::v1::Entity::kPoint,
+            "point-on-line constraint point reference must be a point entity",
+            constraint.id());
+        require_constraint_reference_kind(
+            constraint.point_on_line().line_id(), cccad::solver::v1::Entity::kLine,
+            "point-on-line constraint line reference must be a line entity",
+            constraint.id());
+        break;
+      case cccad::solver::v1::Constraint::kPointOnCircle:
+        references = {constraint.point_on_circle().point_id(),
+                      constraint.point_on_circle().circle_id()};
+        require_constraint_reference_kind(
+            constraint.point_on_circle().point_id(), cccad::solver::v1::Entity::kPoint,
+            "point-on-circle constraint point reference must be a point entity",
+            constraint.id());
+        require_constraint_reference_kind(
+            constraint.point_on_circle().circle_id(), cccad::solver::v1::Entity::kCircle,
+            "point-on-circle constraint circle reference must be a circle entity",
+            constraint.id());
         break;
       case cccad::solver::v1::Constraint::KIND_NOT_SET:
         break;
@@ -414,6 +554,18 @@ SketchSolverEngine::ValidationResult SketchSolverEngine::ValidateModel(
 
   std::unordered_set<std::string> dimension_ids;
   dimension_ids.reserve(static_cast<std::size_t>(model.dimensions_size()));
+  auto require_dimension_reference_kind =
+      [&](const std::string& entity_id, cccad::solver::v1::Entity::KindCase expected_kind,
+          std::string_view message, const std::string& dimension_id) {
+        const auto kind_it = entity_kinds.find(entity_id);
+        if (kind_it == entity_kinds.end()) {
+          return;
+        }
+        if (kind_it->second != expected_kind) {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_dimension_reference",
+                           message, {entity_id}, {}, {dimension_id}, &result);
+        }
+      };
   for (const auto& dimension : model.dimensions()) {
     if (dimension.id().empty()) {
       AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_dimension",
@@ -440,6 +592,43 @@ SketchSolverEngine::ValidationResult SketchSolverEngine::ValidateModel(
                            "distance dimension value must be finite and non-negative", {}, {},
                            {dimension.id()}, &result);
         }
+        if (dimension.distance().ref_kind() ==
+                cccad::solver::v1::DISTANCE_REFERENCE_KIND_UNSPECIFIED ||
+            dimension.distance().ref_kind() ==
+                cccad::solver::v1::DISTANCE_REFERENCE_KIND_POINT_POINT) {
+          require_dimension_reference_kind(
+              dimension.distance().ref_a_id(), cccad::solver::v1::Entity::kPoint,
+              "point-point distance dimension references must be point entities",
+              dimension.id());
+          require_dimension_reference_kind(
+              dimension.distance().ref_b_id(), cccad::solver::v1::Entity::kPoint,
+              "point-point distance dimension references must be point entities",
+              dimension.id());
+        } else if (dimension.distance().ref_kind() ==
+                   cccad::solver::v1::DISTANCE_REFERENCE_KIND_POINT_LINE) {
+          require_dimension_reference_kind(
+              dimension.distance().ref_a_id(), cccad::solver::v1::Entity::kPoint,
+              "point-line distance dimension first reference must be a point entity",
+              dimension.id());
+          require_dimension_reference_kind(
+              dimension.distance().ref_b_id(), cccad::solver::v1::Entity::kLine,
+              "point-line distance dimension second reference must be a line entity",
+              dimension.id());
+        } else if (dimension.distance().ref_kind() ==
+                   cccad::solver::v1::DISTANCE_REFERENCE_KIND_LINE_LINE) {
+          require_dimension_reference_kind(
+              dimension.distance().ref_a_id(), cccad::solver::v1::Entity::kLine,
+              "line-line distance dimension references must be line entities",
+              dimension.id());
+          require_dimension_reference_kind(
+              dimension.distance().ref_b_id(), cccad::solver::v1::Entity::kLine,
+              "line-line distance dimension references must be line entities",
+              dimension.id());
+        } else {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_dimension",
+                           "distance dimension reference kind is unsupported", {}, {},
+                           {dimension.id()}, &result);
+        }
         break;
       case cccad::solver::v1::Dimension::kRadius:
         references = {dimension.radius().entity_id()};
@@ -464,6 +653,12 @@ SketchSolverEngine::ValidationResult SketchSolverEngine::ValidateModel(
                            "angle dimension value must be finite", {}, {}, {dimension.id()},
                            &result);
         }
+        require_dimension_reference_kind(
+            dimension.angle().line_a_id(), cccad::solver::v1::Entity::kLine,
+            "angle dimension references must be line entities", dimension.id());
+        require_dimension_reference_kind(
+            dimension.angle().line_b_id(), cccad::solver::v1::Entity::kLine,
+            "angle dimension references must be line entities", dimension.id());
         break;
       case cccad::solver::v1::Dimension::KIND_NOT_SET:
         break;
@@ -567,7 +762,7 @@ int32_t SketchSolverEngine::EstimateDegreesOfFreedom(
     for (const auto& constraint : model.constraints()) scoped_constraint_ids.push_back(constraint.id());
     for (const auto& dimension : model.dimensions()) scoped_dimension_ids.push_back(dimension.id());
   }
-  return EstimateStage1DegreesOfFreedom(model, BuildStage1Model(model), options, scoped_entity_ids,
+  return EstimateSolverDegreesOfFreedom(model, BuildSolverModel(model), options, scoped_entity_ids,
                                         scoped_constraint_ids, scoped_dimension_ids);
 }
 

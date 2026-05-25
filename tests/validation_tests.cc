@@ -180,6 +180,149 @@ void PointPointDistanceDimensionIsSolved() {
   Require(std::abs(length - 10.0) < 1e-5, "distance dimension should be solved");
 }
 
+void PointLineDistanceDimensionIsSolved() {
+  SolveRequest request;
+  auto* a = request.mutable_model()->add_entities();
+  a->set_id("a");
+  a->mutable_point()->set_x(0.0);
+  a->mutable_point()->set_y(0.0);
+  a->mutable_point()->set_fixed(true);
+  auto* b = request.mutable_model()->add_entities();
+  b->set_id("b");
+  b->mutable_point()->set_x(10.0);
+  b->mutable_point()->set_y(0.0);
+  b->mutable_point()->set_fixed(true);
+  auto* p = request.mutable_model()->add_entities();
+  p->set_id("p");
+  p->mutable_point()->set_x(4.0);
+  p->mutable_point()->set_y(2.0);
+  auto* line = request.mutable_model()->add_entities();
+  line->set_id("l1");
+  line->mutable_line()->set_start_point_id("a");
+  line->mutable_line()->set_end_point_id("b");
+
+  auto* dimension = request.mutable_model()->add_dimensions();
+  dimension->set_id("d_point_line");
+  dimension->set_driving(true);
+  dimension->mutable_distance()->set_ref_a_id("p");
+  dimension->mutable_distance()->set_ref_b_id("l1");
+  dimension->mutable_distance()->set_ref_kind(cccad::solver::v1::DISTANCE_REFERENCE_KIND_POINT_LINE);
+  dimension->mutable_distance()->set_value(6.0);
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double py = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "p") {
+      py = entity.point().y();
+    }
+  }
+  Require(std::abs(std::abs(py) - 6.0) < 1e-5,
+          "point-line distance dimension should be solved");
+}
+
+void LineLineDistanceDimensionIsSolved() {
+  SolveRequest request;
+  auto* a = request.mutable_model()->add_entities();
+  a->set_id("a");
+  a->mutable_point()->set_x(0.0);
+  a->mutable_point()->set_y(0.0);
+  a->mutable_point()->set_fixed(true);
+  auto* b = request.mutable_model()->add_entities();
+  b->set_id("b");
+  b->mutable_point()->set_x(10.0);
+  b->mutable_point()->set_y(0.0);
+  b->mutable_point()->set_fixed(true);
+  auto* c = request.mutable_model()->add_entities();
+  c->set_id("c");
+  c->mutable_point()->set_x(0.0);
+  c->mutable_point()->set_y(5.0);
+  auto* d = request.mutable_model()->add_entities();
+  d->set_id("d");
+  d->mutable_point()->set_x(10.0);
+  d->mutable_point()->set_y(7.0);
+  auto* l1 = request.mutable_model()->add_entities();
+  l1->set_id("l1");
+  l1->mutable_line()->set_start_point_id("a");
+  l1->mutable_line()->set_end_point_id("b");
+  auto* l2 = request.mutable_model()->add_entities();
+  l2->set_id("l2");
+  l2->mutable_line()->set_start_point_id("c");
+  l2->mutable_line()->set_end_point_id("d");
+
+  auto* dimension = request.mutable_model()->add_dimensions();
+  dimension->set_id("d_line_line");
+  dimension->set_driving(true);
+  dimension->mutable_distance()->set_ref_a_id("l1");
+  dimension->mutable_distance()->set_ref_b_id("l2");
+  dimension->mutable_distance()->set_ref_kind(cccad::solver::v1::DISTANCE_REFERENCE_KIND_LINE_LINE);
+  dimension->mutable_distance()->set_value(3.0);
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double cy = 0.0;
+  double dy = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "c") cy = entity.point().y();
+    if (entity.id() == "d") dy = entity.point().y();
+  }
+  Require(std::abs(cy - dy) < 1e-5,
+          "line-line distance dimension should make lines parallel");
+  Require(std::abs(std::abs(cy) - 3.0) < 1e-5,
+          "line-line distance dimension should solve line offset");
+}
+
+void AngleDimensionIsSolved() {
+  SolveRequest request;
+  auto* a = request.mutable_model()->add_entities();
+  a->set_id("a");
+  a->mutable_point()->set_x(0.0);
+  a->mutable_point()->set_y(0.0);
+  a->mutable_point()->set_fixed(true);
+  auto* b = request.mutable_model()->add_entities();
+  b->set_id("b");
+  b->mutable_point()->set_x(10.0);
+  b->mutable_point()->set_y(0.0);
+  b->mutable_point()->set_fixed(true);
+  auto* c = request.mutable_model()->add_entities();
+  c->set_id("c");
+  c->mutable_point()->set_x(2.0);
+  c->mutable_point()->set_y(2.0);
+  c->mutable_point()->set_fixed(true);
+  auto* d = request.mutable_model()->add_entities();
+  d->set_id("d");
+  d->mutable_point()->set_x(8.0);
+  d->mutable_point()->set_y(4.0);
+  auto* l1 = request.mutable_model()->add_entities();
+  l1->set_id("l1");
+  l1->mutable_line()->set_start_point_id("a");
+  l1->mutable_line()->set_end_point_id("b");
+  auto* l2 = request.mutable_model()->add_entities();
+  l2->set_id("l2");
+  l2->mutable_line()->set_start_point_id("c");
+  l2->mutable_line()->set_end_point_id("d");
+
+  auto* dimension = request.mutable_model()->add_dimensions();
+  dimension->set_id("angle");
+  dimension->set_driving(true);
+  dimension->mutable_angle()->set_line_a_id("l1");
+  dimension->mutable_angle()->set_line_b_id("l2");
+  dimension->mutable_angle()->set_value_rad(3.14159265358979323846 / 2.0);
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double dx = 1000.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "d") {
+      dx = entity.point().x() - 2.0;
+    }
+  }
+  Require(std::abs(dx) < 1e-5, "angle dimension should solve line angle");
+}
+
 void CircleRadiusDimensionIsSolved() {
   SolveRequest request;
   auto* center = request.mutable_model()->add_entities();
@@ -208,6 +351,810 @@ void CircleRadiusDimensionIsSolved() {
     }
   }
   Require(std::abs(radius - 8.0) < 1e-5, "radius dimension should be solved");
+}
+
+void LineCircleTangentConstraintIsSolved() {
+  SolveRequest request;
+  auto* a = request.mutable_model()->add_entities();
+  a->set_id("a");
+  a->mutable_point()->set_x(0.0);
+  a->mutable_point()->set_y(0.0);
+  a->mutable_point()->set_fixed(true);
+  auto* b = request.mutable_model()->add_entities();
+  b->set_id("b");
+  b->mutable_point()->set_x(10.0);
+  b->mutable_point()->set_y(0.0);
+  b->mutable_point()->set_fixed(true);
+  auto* center = request.mutable_model()->add_entities();
+  center->set_id("center");
+  center->mutable_point()->set_x(4.0);
+  center->mutable_point()->set_y(3.0);
+  center->mutable_point()->set_fixed(true);
+
+  auto* line = request.mutable_model()->add_entities();
+  line->set_id("line");
+  line->mutable_line()->set_start_point_id("a");
+  line->mutable_line()->set_end_point_id("b");
+  auto* circle = request.mutable_model()->add_entities();
+  circle->set_id("circle");
+  circle->mutable_circle()->set_center_point_id("center");
+  circle->mutable_circle()->set_radius(1.0);
+
+  auto* tangent = request.mutable_model()->add_constraints();
+  tangent->set_id("line_circle_tangent");
+  tangent->mutable_tangent()->set_entity_a_id("line");
+  tangent->mutable_tangent()->set_entity_b_id("circle");
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double radius = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "circle") {
+      radius = entity.circle().radius();
+    }
+  }
+  Require(response.status() != SOLVE_STATUS_NUMERICAL_FAILURE,
+          "line-circle tangent constraint should converge");
+  Require(std::abs(radius - 3.0) < 1e-5,
+          "line-circle tangent should solve radius to line distance");
+}
+
+void ExternalCircleCircleTangentConstraintIsSolved() {
+  SolveRequest request;
+  auto* c1 = request.mutable_model()->add_entities();
+  c1->set_id("c1");
+  c1->mutable_point()->set_x(0.0);
+  c1->mutable_point()->set_y(0.0);
+  c1->mutable_point()->set_fixed(true);
+  auto* c2 = request.mutable_model()->add_entities();
+  c2->set_id("c2");
+  c2->mutable_point()->set_x(10.0);
+  c2->mutable_point()->set_y(0.0);
+  c2->mutable_point()->set_fixed(true);
+
+  auto* circle1 = request.mutable_model()->add_entities();
+  circle1->set_id("circle1");
+  circle1->mutable_circle()->set_center_point_id("c1");
+  circle1->mutable_circle()->set_radius(3.0);
+  auto* circle2 = request.mutable_model()->add_entities();
+  circle2->set_id("circle2");
+  circle2->mutable_circle()->set_center_point_id("c2");
+  circle2->mutable_circle()->set_radius(1.0);
+
+  auto* fixed = request.mutable_model()->add_constraints();
+  fixed->set_id("fixed_circle1");
+  fixed->mutable_fixed()->set_entity_id("circle1");
+  auto* tangent = request.mutable_model()->add_constraints();
+  tangent->set_id("external_tangent");
+  tangent->mutable_tangent()->set_entity_a_id("circle1");
+  tangent->mutable_tangent()->set_entity_b_id("circle2");
+  tangent->mutable_tangent()->set_branch(cccad::solver::v1::TANGENT_BRANCH_EXTERNAL);
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double radius = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "circle2") {
+      radius = entity.circle().radius();
+    }
+  }
+  Require(response.status() != SOLVE_STATUS_NUMERICAL_FAILURE,
+          "external circle-circle tangent constraint should converge");
+  Require(std::abs(radius - 7.0) < 1e-5,
+          "external circle-circle tangent should solve radii sum to center distance");
+}
+
+void InternalCircleCircleTangentConstraintIsSolved() {
+  SolveRequest request;
+  auto* c1 = request.mutable_model()->add_entities();
+  c1->set_id("c1");
+  c1->mutable_point()->set_x(0.0);
+  c1->mutable_point()->set_y(0.0);
+  c1->mutable_point()->set_fixed(true);
+  auto* c2 = request.mutable_model()->add_entities();
+  c2->set_id("c2");
+  c2->mutable_point()->set_x(10.0);
+  c2->mutable_point()->set_y(0.0);
+  c2->mutable_point()->set_fixed(true);
+
+  auto* circle1 = request.mutable_model()->add_entities();
+  circle1->set_id("circle1");
+  circle1->mutable_circle()->set_center_point_id("c1");
+  circle1->mutable_circle()->set_radius(14.0);
+  auto* circle2 = request.mutable_model()->add_entities();
+  circle2->set_id("circle2");
+  circle2->mutable_circle()->set_center_point_id("c2");
+  circle2->mutable_circle()->set_radius(1.0);
+
+  auto* fixed = request.mutable_model()->add_constraints();
+  fixed->set_id("fixed_circle1");
+  fixed->mutable_fixed()->set_entity_id("circle1");
+  auto* tangent = request.mutable_model()->add_constraints();
+  tangent->set_id("internal_tangent");
+  tangent->mutable_tangent()->set_entity_a_id("circle1");
+  tangent->mutable_tangent()->set_entity_b_id("circle2");
+  tangent->mutable_tangent()->set_branch(cccad::solver::v1::TANGENT_BRANCH_INTERNAL);
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double radius = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "circle2") {
+      radius = entity.circle().radius();
+    }
+  }
+  Require(response.status() != SOLVE_STATUS_NUMERICAL_FAILURE,
+          "internal circle-circle tangent constraint should converge");
+  Require(std::abs(radius - 4.0) < 1e-5,
+          "internal circle-circle tangent should solve radii difference to center distance");
+}
+
+void ArcRadiusConsistencyIsSolved() {
+  SolveRequest request;
+  auto* center = request.mutable_model()->add_entities();
+  center->set_id("center");
+  center->mutable_point()->set_x(0.0);
+  center->mutable_point()->set_y(0.0);
+  center->mutable_point()->set_fixed(true);
+  auto* start = request.mutable_model()->add_entities();
+  start->set_id("start");
+  start->mutable_point()->set_x(5.0);
+  start->mutable_point()->set_y(0.0);
+  start->mutable_point()->set_fixed(true);
+  auto* end = request.mutable_model()->add_entities();
+  end->set_id("end");
+  end->mutable_point()->set_x(0.0);
+  end->mutable_point()->set_y(2.0);
+
+  auto* arc = request.mutable_model()->add_entities();
+  arc->set_id("arc");
+  arc->mutable_arc()->set_center_point_id("center");
+  arc->mutable_arc()->set_start_point_id("start");
+  arc->mutable_arc()->set_end_point_id("end");
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double ex = 0.0;
+  double ey = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "end") {
+      ex = entity.point().x();
+      ey = entity.point().y();
+    }
+  }
+  Require(std::abs(std::sqrt(ex * ex + ey * ey) - 5.0) < 1e-5,
+          "arc radius consistency should solve end radius to start radius");
+}
+
+void ArcBranchIsPreserved() {
+  SolveRequest request;
+  auto* center = request.mutable_model()->add_entities();
+  center->set_id("center");
+  center->mutable_point()->set_x(0.0);
+  center->mutable_point()->set_y(0.0);
+  auto* start = request.mutable_model()->add_entities();
+  start->set_id("start");
+  start->mutable_point()->set_x(1.0);
+  start->mutable_point()->set_y(0.0);
+  auto* end = request.mutable_model()->add_entities();
+  end->set_id("end");
+  end->mutable_point()->set_x(0.0);
+  end->mutable_point()->set_y(1.0);
+  auto* arc = request.mutable_model()->add_entities();
+  arc->set_id("arc");
+  arc->mutable_arc()->set_center_point_id("center");
+  arc->mutable_arc()->set_start_point_id("start");
+  arc->mutable_arc()->set_end_point_id("end");
+  arc->mutable_arc()->set_clockwise(true);
+  arc->mutable_arc()->set_branch(cccad::solver::v1::ARC_BRANCH_MAJOR);
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  bool found_branch = false;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "arc") {
+      found_branch = entity.arc().clockwise() &&
+                     entity.arc().branch() == cccad::solver::v1::ARC_BRANCH_MAJOR;
+    }
+  }
+  Require(found_branch, "arc branch and direction should be preserved in solution");
+}
+
+void LineArcTangentConstraintIsSolved() {
+  SolveRequest request;
+  auto* a = request.mutable_model()->add_entities();
+  a->set_id("a");
+  a->mutable_point()->set_x(0.0);
+  a->mutable_point()->set_y(0.0);
+  a->mutable_point()->set_fixed(true);
+  auto* b = request.mutable_model()->add_entities();
+  b->set_id("b");
+  b->mutable_point()->set_x(10.0);
+  b->mutable_point()->set_y(0.0);
+  b->mutable_point()->set_fixed(true);
+  auto* center = request.mutable_model()->add_entities();
+  center->set_id("center");
+  center->mutable_point()->set_x(4.0);
+  center->mutable_point()->set_y(3.0);
+  center->mutable_point()->set_fixed(true);
+  auto* start = request.mutable_model()->add_entities();
+  start->set_id("start");
+  start->mutable_point()->set_x(5.0);
+  start->mutable_point()->set_y(3.0);
+  auto* end = request.mutable_model()->add_entities();
+  end->set_id("end");
+  end->mutable_point()->set_x(4.0);
+  end->mutable_point()->set_y(4.0);
+
+  auto* line = request.mutable_model()->add_entities();
+  line->set_id("line");
+  line->mutable_line()->set_start_point_id("a");
+  line->mutable_line()->set_end_point_id("b");
+  auto* arc = request.mutable_model()->add_entities();
+  arc->set_id("arc");
+  arc->mutable_arc()->set_center_point_id("center");
+  arc->mutable_arc()->set_start_point_id("start");
+  arc->mutable_arc()->set_end_point_id("end");
+
+  auto* tangent = request.mutable_model()->add_constraints();
+  tangent->set_id("line_arc_tangent");
+  tangent->mutable_tangent()->set_entity_a_id("line");
+  tangent->mutable_tangent()->set_entity_b_id("arc");
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double sx = 0.0;
+  double sy = 0.0;
+  double ex = 0.0;
+  double ey = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "start") {
+      sx = entity.point().x();
+      sy = entity.point().y();
+    } else if (entity.id() == "end") {
+      ex = entity.point().x();
+      ey = entity.point().y();
+    }
+  }
+  const double start_radius = std::sqrt((sx - 4.0) * (sx - 4.0) + (sy - 3.0) * (sy - 3.0));
+  const double end_radius = std::sqrt((ex - 4.0) * (ex - 4.0) + (ey - 3.0) * (ey - 3.0));
+  Require(response.status() != SOLVE_STATUS_NUMERICAL_FAILURE,
+          "line-arc tangent constraint should converge");
+  Require(std::abs(start_radius - 3.0) < 1e-5,
+          "line-arc tangent should solve arc radius to line distance");
+  Require(std::abs(end_radius - start_radius) < 1e-5,
+          "line-arc tangent should preserve arc radius consistency");
+}
+
+void ArcArcEqualRadiusConstraintIsSolved() {
+  SolveRequest request;
+  auto* c1 = request.mutable_model()->add_entities();
+  c1->set_id("c1");
+  c1->mutable_point()->set_x(0.0);
+  c1->mutable_point()->set_y(0.0);
+  c1->mutable_point()->set_fixed(true);
+  auto* s1 = request.mutable_model()->add_entities();
+  s1->set_id("s1");
+  s1->mutable_point()->set_x(5.0);
+  s1->mutable_point()->set_y(0.0);
+  s1->mutable_point()->set_fixed(true);
+  auto* e1 = request.mutable_model()->add_entities();
+  e1->set_id("e1");
+  e1->mutable_point()->set_x(0.0);
+  e1->mutable_point()->set_y(5.0);
+  e1->mutable_point()->set_fixed(true);
+  auto* c2 = request.mutable_model()->add_entities();
+  c2->set_id("c2");
+  c2->mutable_point()->set_x(10.0);
+  c2->mutable_point()->set_y(0.0);
+  c2->mutable_point()->set_fixed(true);
+  auto* s2 = request.mutable_model()->add_entities();
+  s2->set_id("s2");
+  s2->mutable_point()->set_x(12.0);
+  s2->mutable_point()->set_y(0.0);
+  auto* e2 = request.mutable_model()->add_entities();
+  e2->set_id("e2");
+  e2->mutable_point()->set_x(10.0);
+  e2->mutable_point()->set_y(2.0);
+
+  auto* arc1 = request.mutable_model()->add_entities();
+  arc1->set_id("arc1");
+  arc1->mutable_arc()->set_center_point_id("c1");
+  arc1->mutable_arc()->set_start_point_id("s1");
+  arc1->mutable_arc()->set_end_point_id("e1");
+  auto* arc2 = request.mutable_model()->add_entities();
+  arc2->set_id("arc2");
+  arc2->mutable_arc()->set_center_point_id("c2");
+  arc2->mutable_arc()->set_start_point_id("s2");
+  arc2->mutable_arc()->set_end_point_id("e2");
+
+  auto* equal = request.mutable_model()->add_constraints();
+  equal->set_id("arc_arc_equal_radius");
+  equal->mutable_equal()->set_entity_a_id("arc1");
+  equal->mutable_equal()->set_entity_b_id("arc2");
+  equal->mutable_equal()->set_kind(cccad::solver::v1::EQUAL_KIND_RADIUS);
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double s2x = 0.0;
+  double s2y = 0.0;
+  double e2x = 0.0;
+  double e2y = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "s2") {
+      s2x = entity.point().x();
+      s2y = entity.point().y();
+    } else if (entity.id() == "e2") {
+      e2x = entity.point().x();
+      e2y = entity.point().y();
+    }
+  }
+  const double start_radius = std::sqrt((s2x - 10.0) * (s2x - 10.0) + s2y * s2y);
+  const double end_radius = std::sqrt((e2x - 10.0) * (e2x - 10.0) + e2y * e2y);
+  Require(std::abs(start_radius - 5.0) < 1e-5,
+          "arc-arc equal radius should solve start radius");
+  Require(std::abs(end_radius - 5.0) < 1e-5,
+          "arc-arc equal radius should solve end radius through arc consistency");
+}
+
+void PointOnLineConstraintIsSolved() {
+  SolveRequest request;
+  auto* a = request.mutable_model()->add_entities();
+  a->set_id("a");
+  a->mutable_point()->set_x(0.0);
+  a->mutable_point()->set_y(0.0);
+  a->mutable_point()->set_fixed(true);
+  auto* b = request.mutable_model()->add_entities();
+  b->set_id("b");
+  b->mutable_point()->set_x(10.0);
+  b->mutable_point()->set_y(0.0);
+  b->mutable_point()->set_fixed(true);
+  auto* p = request.mutable_model()->add_entities();
+  p->set_id("p");
+  p->mutable_point()->set_x(4.0);
+  p->mutable_point()->set_y(3.0);
+
+  auto* line = request.mutable_model()->add_entities();
+  line->set_id("line");
+  line->mutable_line()->set_start_point_id("a");
+  line->mutable_line()->set_end_point_id("b");
+
+  auto* constraint = request.mutable_model()->add_constraints();
+  constraint->set_id("point_on_line");
+  constraint->mutable_point_on_line()->set_point_id("p");
+  constraint->mutable_point_on_line()->set_line_id("line");
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double py = 1000.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "p") {
+      py = entity.point().y();
+    }
+  }
+  Require(response.status() != SOLVE_STATUS_NUMERICAL_FAILURE,
+          "point-on-line constraint should converge");
+  Require(std::abs(py) < 1e-5, "point-on-line constraint should move point onto line");
+}
+
+void PointOnCircleConstraintIsSolved() {
+  SolveRequest request;
+  auto* center = request.mutable_model()->add_entities();
+  center->set_id("center");
+  center->mutable_point()->set_x(0.0);
+  center->mutable_point()->set_y(0.0);
+  center->mutable_point()->set_fixed(true);
+  auto* p = request.mutable_model()->add_entities();
+  p->set_id("p");
+  p->mutable_point()->set_x(2.0);
+  p->mutable_point()->set_y(0.0);
+
+  auto* circle = request.mutable_model()->add_entities();
+  circle->set_id("circle");
+  circle->mutable_circle()->set_center_point_id("center");
+  circle->mutable_circle()->set_radius(5.0);
+
+  auto* fixed = request.mutable_model()->add_constraints();
+  fixed->set_id("fixed_circle");
+  fixed->mutable_fixed()->set_entity_id("circle");
+  auto* constraint = request.mutable_model()->add_constraints();
+  constraint->set_id("point_on_circle");
+  constraint->mutable_point_on_circle()->set_point_id("p");
+  constraint->mutable_point_on_circle()->set_circle_id("circle");
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double px = 0.0;
+  double py = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "p") {
+      px = entity.point().x();
+      py = entity.point().y();
+    }
+  }
+  Require(response.status() != SOLVE_STATUS_NUMERICAL_FAILURE,
+          "point-on-circle constraint should converge");
+  Require(std::abs(std::sqrt(px * px + py * py) - 5.0) < 1e-5,
+          "point-on-circle constraint should move point onto circle");
+}
+
+void ParallelConstraintIsSolved() {
+  SolveRequest request;
+  auto* a = request.mutable_model()->add_entities();
+  a->set_id("a");
+  a->mutable_point()->set_x(0.0);
+  a->mutable_point()->set_y(0.0);
+  a->mutable_point()->set_fixed(true);
+  auto* b = request.mutable_model()->add_entities();
+  b->set_id("b");
+  b->mutable_point()->set_x(10.0);
+  b->mutable_point()->set_y(0.0);
+  b->mutable_point()->set_fixed(true);
+  auto* c = request.mutable_model()->add_entities();
+  c->set_id("c");
+  c->mutable_point()->set_x(0.0);
+  c->mutable_point()->set_y(5.0);
+  c->mutable_point()->set_fixed(true);
+  auto* d = request.mutable_model()->add_entities();
+  d->set_id("d");
+  d->mutable_point()->set_x(10.0);
+  d->mutable_point()->set_y(8.0);
+
+  auto* l1 = request.mutable_model()->add_entities();
+  l1->set_id("l1");
+  l1->mutable_line()->set_start_point_id("a");
+  l1->mutable_line()->set_end_point_id("b");
+  auto* l2 = request.mutable_model()->add_entities();
+  l2->set_id("l2");
+  l2->mutable_line()->set_start_point_id("c");
+  l2->mutable_line()->set_end_point_id("d");
+
+  auto* constraint = request.mutable_model()->add_constraints();
+  constraint->set_id("parallel");
+  constraint->mutable_parallel()->set_line_a_id("l1");
+  constraint->mutable_parallel()->set_line_b_id("l2");
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double dy = 1000.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "d") {
+      dy = entity.point().y() - 5.0;
+    }
+  }
+  Require(response.status() != SOLVE_STATUS_NUMERICAL_FAILURE,
+          "parallel constraint should converge");
+  Require(std::abs(dy) < 1e-5, "parallel constraint should align line directions");
+}
+
+void PerpendicularConstraintIsSolved() {
+  SolveRequest request;
+  auto* a = request.mutable_model()->add_entities();
+  a->set_id("a");
+  a->mutable_point()->set_x(0.0);
+  a->mutable_point()->set_y(0.0);
+  a->mutable_point()->set_fixed(true);
+  auto* b = request.mutable_model()->add_entities();
+  b->set_id("b");
+  b->mutable_point()->set_x(10.0);
+  b->mutable_point()->set_y(0.0);
+  b->mutable_point()->set_fixed(true);
+  auto* c = request.mutable_model()->add_entities();
+  c->set_id("c");
+  c->mutable_point()->set_x(2.0);
+  c->mutable_point()->set_y(2.0);
+  c->mutable_point()->set_fixed(true);
+  auto* d = request.mutable_model()->add_entities();
+  d->set_id("d");
+  d->mutable_point()->set_x(8.0);
+  d->mutable_point()->set_y(8.0);
+
+  auto* l1 = request.mutable_model()->add_entities();
+  l1->set_id("l1");
+  l1->mutable_line()->set_start_point_id("a");
+  l1->mutable_line()->set_end_point_id("b");
+  auto* l2 = request.mutable_model()->add_entities();
+  l2->set_id("l2");
+  l2->mutable_line()->set_start_point_id("c");
+  l2->mutable_line()->set_end_point_id("d");
+
+  auto* constraint = request.mutable_model()->add_constraints();
+  constraint->set_id("perpendicular");
+  constraint->mutable_perpendicular()->set_line_a_id("l1");
+  constraint->mutable_perpendicular()->set_line_b_id("l2");
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double solved_dx = 1000.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "d") {
+      solved_dx = entity.point().x() - 2.0;
+    }
+  }
+  Require(response.status() != SOLVE_STATUS_NUMERICAL_FAILURE,
+          "perpendicular constraint should converge");
+  Require(std::abs(solved_dx) < 1e-5,
+          "perpendicular constraint should make second line vertical");
+}
+
+void MidpointConstraintIsSolved() {
+  SolveRequest request;
+  auto* a = request.mutable_model()->add_entities();
+  a->set_id("a");
+  a->mutable_point()->set_x(0.0);
+  a->mutable_point()->set_y(0.0);
+  a->mutable_point()->set_fixed(true);
+  auto* b = request.mutable_model()->add_entities();
+  b->set_id("b");
+  b->mutable_point()->set_x(10.0);
+  b->mutable_point()->set_y(4.0);
+  b->mutable_point()->set_fixed(true);
+  auto* m = request.mutable_model()->add_entities();
+  m->set_id("m");
+  m->mutable_point()->set_x(1.0);
+  m->mutable_point()->set_y(1.0);
+
+  auto* constraint = request.mutable_model()->add_constraints();
+  constraint->set_id("midpoint");
+  constraint->mutable_midpoint()->set_midpoint_id("m");
+  constraint->mutable_midpoint()->set_point_a_id("a");
+  constraint->mutable_midpoint()->set_point_b_id("b");
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double mx = 0.0;
+  double my = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "m") {
+      mx = entity.point().x();
+      my = entity.point().y();
+    }
+  }
+  Require(std::abs(mx - 5.0) < 1e-5, "midpoint constraint should solve midpoint x");
+  Require(std::abs(my - 2.0) < 1e-5, "midpoint constraint should solve midpoint y");
+}
+
+void ConcentricConstraintIsSolved() {
+  SolveRequest request;
+  auto* a = request.mutable_model()->add_entities();
+  a->set_id("a");
+  a->mutable_point()->set_x(0.0);
+  a->mutable_point()->set_y(0.0);
+  a->mutable_point()->set_fixed(true);
+  auto* b = request.mutable_model()->add_entities();
+  b->set_id("b");
+  b->mutable_point()->set_x(5.0);
+  b->mutable_point()->set_y(7.0);
+
+  auto* c1 = request.mutable_model()->add_entities();
+  c1->set_id("c1");
+  c1->mutable_circle()->set_center_point_id("a");
+  c1->mutable_circle()->set_radius(3.0);
+  auto* c2 = request.mutable_model()->add_entities();
+  c2->set_id("c2");
+  c2->mutable_circle()->set_center_point_id("b");
+  c2->mutable_circle()->set_radius(2.0);
+
+  auto* constraint = request.mutable_model()->add_constraints();
+  constraint->set_id("concentric");
+  constraint->mutable_concentric()->set_circle_a_id("c1");
+  constraint->mutable_concentric()->set_circle_b_id("c2");
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double bx = 1000.0;
+  double by = 1000.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "b") {
+      bx = entity.point().x();
+      by = entity.point().y();
+    }
+  }
+  Require(std::abs(bx) < 1e-5, "concentric constraint should align center x");
+  Require(std::abs(by) < 1e-5, "concentric constraint should align center y");
+}
+
+void EqualLengthConstraintIsSolved() {
+  SolveRequest request;
+  auto* a = request.mutable_model()->add_entities();
+  a->set_id("a");
+  a->mutable_point()->set_x(0.0);
+  a->mutable_point()->set_y(0.0);
+  a->mutable_point()->set_fixed(true);
+  auto* b = request.mutable_model()->add_entities();
+  b->set_id("b");
+  b->mutable_point()->set_x(10.0);
+  b->mutable_point()->set_y(0.0);
+  b->mutable_point()->set_fixed(true);
+  auto* c = request.mutable_model()->add_entities();
+  c->set_id("c");
+  c->mutable_point()->set_x(0.0);
+  c->mutable_point()->set_y(5.0);
+  c->mutable_point()->set_fixed(true);
+  auto* d = request.mutable_model()->add_entities();
+  d->set_id("d");
+  d->mutable_point()->set_x(3.0);
+  d->mutable_point()->set_y(5.0);
+
+  auto* l1 = request.mutable_model()->add_entities();
+  l1->set_id("l1");
+  l1->mutable_line()->set_start_point_id("a");
+  l1->mutable_line()->set_end_point_id("b");
+  auto* l2 = request.mutable_model()->add_entities();
+  l2->set_id("l2");
+  l2->mutable_line()->set_start_point_id("c");
+  l2->mutable_line()->set_end_point_id("d");
+
+  auto* constraint = request.mutable_model()->add_constraints();
+  constraint->set_id("equal_length");
+  constraint->mutable_equal()->set_entity_a_id("l1");
+  constraint->mutable_equal()->set_entity_b_id("l2");
+  constraint->mutable_equal()->set_kind(cccad::solver::v1::EQUAL_KIND_LENGTH);
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double dx = 0.0;
+  double dy = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "d") {
+      dx = entity.point().x();
+      dy = entity.point().y() - 5.0;
+    }
+  }
+  Require(std::abs(std::sqrt(dx * dx + dy * dy) - 10.0) < 1e-5,
+          "equal length constraint should match line lengths");
+}
+
+void EqualRadiusConstraintIsSolved() {
+  SolveRequest request;
+  auto* a = request.mutable_model()->add_entities();
+  a->set_id("a");
+  a->mutable_point()->set_x(0.0);
+  a->mutable_point()->set_y(0.0);
+  a->mutable_point()->set_fixed(true);
+  auto* b = request.mutable_model()->add_entities();
+  b->set_id("b");
+  b->mutable_point()->set_x(5.0);
+  b->mutable_point()->set_y(0.0);
+  b->mutable_point()->set_fixed(true);
+
+  auto* c1 = request.mutable_model()->add_entities();
+  c1->set_id("c1");
+  c1->mutable_circle()->set_center_point_id("a");
+  c1->mutable_circle()->set_radius(7.0);
+  auto* c2 = request.mutable_model()->add_entities();
+  c2->set_id("c2");
+  c2->mutable_circle()->set_center_point_id("b");
+  c2->mutable_circle()->set_radius(2.0);
+
+  auto* fixed = request.mutable_model()->add_constraints();
+  fixed->set_id("fixed_c1");
+  fixed->mutable_fixed()->set_entity_id("c1");
+
+  auto* constraint = request.mutable_model()->add_constraints();
+  constraint->set_id("equal_radius");
+  constraint->mutable_equal()->set_entity_a_id("c1");
+  constraint->mutable_equal()->set_entity_b_id("c2");
+  constraint->mutable_equal()->set_kind(cccad::solver::v1::EQUAL_KIND_RADIUS);
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double radius = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "c2") {
+      radius = entity.circle().radius();
+    }
+  }
+  Require(std::abs(radius - 7.0) < 1e-5,
+          "equal radius constraint should match circle radii");
+}
+
+void RoundArcConstraintsAreSolved() {
+  SolveRequest request;
+  auto* circle_center = request.mutable_model()->add_entities();
+  circle_center->set_id("circle_center");
+  circle_center->mutable_point()->set_x(0.0);
+  circle_center->mutable_point()->set_y(0.0);
+  circle_center->mutable_point()->set_fixed(true);
+  auto* arc_center = request.mutable_model()->add_entities();
+  arc_center->set_id("arc_center");
+  arc_center->mutable_point()->set_x(5.0);
+  arc_center->mutable_point()->set_y(0.0);
+  auto* arc_start = request.mutable_model()->add_entities();
+  arc_start->set_id("arc_start");
+  arc_start->mutable_point()->set_x(7.0);
+  arc_start->mutable_point()->set_y(0.0);
+  auto* arc_end = request.mutable_model()->add_entities();
+  arc_end->set_id("arc_end");
+  arc_end->mutable_point()->set_x(5.0);
+  arc_end->mutable_point()->set_y(2.0);
+
+  auto* circle = request.mutable_model()->add_entities();
+  circle->set_id("circle");
+  circle->mutable_circle()->set_center_point_id("circle_center");
+  circle->mutable_circle()->set_radius(7.0);
+  auto* arc = request.mutable_model()->add_entities();
+  arc->set_id("arc");
+  arc->mutable_arc()->set_center_point_id("arc_center");
+  arc->mutable_arc()->set_start_point_id("arc_start");
+  arc->mutable_arc()->set_end_point_id("arc_end");
+
+  auto* fixed = request.mutable_model()->add_constraints();
+  fixed->set_id("fixed_circle");
+  fixed->mutable_fixed()->set_entity_id("circle");
+
+  auto* concentric = request.mutable_model()->add_constraints();
+  concentric->set_id("concentric_arc");
+  concentric->mutable_concentric()->set_circle_a_id("circle");
+  concentric->mutable_concentric()->set_circle_b_id("arc");
+
+  auto* equal_radius = request.mutable_model()->add_constraints();
+  equal_radius->set_id("equal_radius_arc");
+  equal_radius->mutable_equal()->set_entity_a_id("circle");
+  equal_radius->mutable_equal()->set_entity_b_id("arc");
+  equal_radius->mutable_equal()->set_kind(cccad::solver::v1::EQUAL_KIND_RADIUS);
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  double cx = 1000.0;
+  double cy = 1000.0;
+  double sx = 0.0;
+  double sy = 0.0;
+  for (const auto& entity : response.solution().entities()) {
+    if (entity.id() == "arc_center") {
+      cx = entity.point().x();
+      cy = entity.point().y();
+    } else if (entity.id() == "arc_start") {
+      sx = entity.point().x();
+      sy = entity.point().y();
+    }
+  }
+  Require(std::abs(cx) < 1e-5, "concentric should accept arc center x");
+  Require(std::abs(cy) < 1e-5, "concentric should accept arc center y");
+  Require(std::abs(std::sqrt((sx - cx) * (sx - cx) + (sy - cy) * (sy - cy)) - 7.0) < 1e-5,
+          "equal radius should accept arc radius");
+}
+
+void EqualLengthRejectsNonLineReferences() {
+  CheckRequest request;
+  auto* p = request.mutable_model()->add_entities();
+  p->set_id("p");
+  p->mutable_point()->set_x(0.0);
+  p->mutable_point()->set_y(0.0);
+  auto* q = request.mutable_model()->add_entities();
+  q->set_id("q");
+  q->mutable_point()->set_x(1.0);
+  q->mutable_point()->set_y(0.0);
+
+  auto* constraint = request.mutable_model()->add_constraints();
+  constraint->set_id("bad_equal");
+  constraint->mutable_equal()->set_entity_a_id("p");
+  constraint->mutable_equal()->set_entity_b_id("q");
+  constraint->mutable_equal()->set_kind(cccad::solver::v1::EQUAL_KIND_LENGTH);
+
+  CheckResponse response;
+  SketchSolverEngine{}.Check(request, &response);
+
+  Require(response.status() == SOLVE_STATUS_INCONSISTENT,
+          "equal length should reject non-line references");
+  Require(response.diagnostics_size() == 2,
+          "equal length with two point references should produce two diagnostics");
 }
 
 
@@ -388,7 +1335,27 @@ int main() {
   InvalidConstraintReferencesAreRejected();
   HorizontalConstraintIsSolved();
   PointPointDistanceDimensionIsSolved();
+  PointLineDistanceDimensionIsSolved();
+  LineLineDistanceDimensionIsSolved();
+  AngleDimensionIsSolved();
   CircleRadiusDimensionIsSolved();
+  LineCircleTangentConstraintIsSolved();
+  ExternalCircleCircleTangentConstraintIsSolved();
+  InternalCircleCircleTangentConstraintIsSolved();
+  ArcRadiusConsistencyIsSolved();
+  ArcBranchIsPreserved();
+  LineArcTangentConstraintIsSolved();
+  ArcArcEqualRadiusConstraintIsSolved();
+  PointOnLineConstraintIsSolved();
+  PointOnCircleConstraintIsSolved();
+  ParallelConstraintIsSolved();
+  PerpendicularConstraintIsSolved();
+  MidpointConstraintIsSolved();
+  ConcentricConstraintIsSolved();
+  EqualLengthConstraintIsSolved();
+  EqualRadiusConstraintIsSolved();
+  RoundArcConstraintsAreSolved();
+  EqualLengthRejectsNonLineReferences();
   SolvedLineIsReturned();
   AnalyzeReturnsRealComponents();
   ApplyIntentReportsAffectedComponentOnly();

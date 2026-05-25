@@ -1,4 +1,4 @@
-#include "cccad/solver/stage1_solver.h"
+#include "cccad/solver/constraint_solver.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,8 +13,10 @@ namespace {
 using cccad::solver::v1::CONSTRAINT_STATUS_ACTIVE;
 
 constexpr double kDefaultTolerance = 1e-8;
-constexpr double kDefaultStabilityWeight = 1e-6;
+constexpr double kDefaultStabilityWeight = 1e-12;
 constexpr double kMinimumRadius = 1e-9;
+constexpr double kPi = 3.141592653589793238462643383279502884;
+constexpr double kTwoPi = 2.0 * kPi;
 
 bool IsActive(cccad::solver::v1::ConstraintStatus status) {
   return status == cccad::solver::v1::CONSTRAINT_STATUS_UNSPECIFIED ||
@@ -29,7 +31,252 @@ double Distance(double ax, double ay, double bx, double by) {
   return std::sqrt(Square(bx - ax) + Square(by - ay));
 }
 
-struct Stage1Variable {
+double NormalizePositiveAngle(double value) {
+  double normalized = std::fmod(value, kTwoPi);
+  if (normalized < 0.0) {
+    normalized += kTwoPi;
+  }
+  return normalized;
+}
+
+double NormalizeSignedAngle(double value) {
+  double normalized = NormalizePositiveAngle(value);
+  if (normalized > kPi) {
+    normalized -= kTwoPi;
+  }
+  return normalized;
+}
+
+double ClampUnit(double value) { return std::max(-1.0, std::min(1.0, value)); }
+
+struct LineGeometry {
+  const SolverPoint* start = nullptr;
+  const SolverPoint* end = nullptr;
+  double dx = 0.0;
+  double dy = 0.0;
+  double length = 0.0;
+};
+
+std::optional<LineGeometry> GetLineGeometry(const SolverModel& model, const std::string& line_id) {
+  const auto line_it = model.lines.find(line_id);
+  if (line_it == model.lines.end()) {
+    return std::nullopt;
+  }
+  const auto start_it = model.points.find(line_it->second.start_point_id);
+  const auto end_it = model.points.find(line_it->second.end_point_id);
+  if (start_it == model.points.end() || end_it == model.points.end()) {
+    return std::nullopt;
+  }
+  LineGeometry geometry;
+  geometry.start = &start_it->second;
+  geometry.end = &end_it->second;
+  geometry.dx = geometry.end->x - geometry.start->x;
+  geometry.dy = geometry.end->y - geometry.start->y;
+  geometry.length = std::sqrt(Square(geometry.dx) + Square(geometry.dy));
+  return geometry;
+}
+
+std::optional<double> PointLineDistance(const SolverModel& model,
+                                        const std::string& point_id,
+                                        const std::string& line_id) {
+  const auto point_it = model.points.find(point_id);
+  const auto line = GetLineGeometry(model, line_id);
+  if (point_it == model.points.end() || !line.has_value() || line->length < kMinimumRadius) {
+    return std::nullopt;
+  }
+  const double cross = line->dx * (point_it->second.y - line->start->y) -
+                       line->dy * (point_it->second.x - line->start->x);
+  return std::abs(cross) / line->length;
+}
+
+std::optional<double> LineLineDistance(const LineGeometry& line_a,
+                                       const LineGeometry& line_b) {
+  if (line_a.length < kMinimumRadius || line_b.length < kMinimumRadius) {
+    return std::nullopt;
+  }
+  const double cross = line_a.dx * (line_b.start->y - line_a.start->y) -
+                       line_a.dy * (line_b.start->x - line_a.start->x);
+  return std::abs(cross) / line_a.length;
+}
+
+std::optional<double> ParallelResidual(const LineGeometry& line_a,
+                                       const LineGeometry& line_b) {
+  const double scale = line_a.length * line_b.length;
+  if (scale < kMinimumRadius) {
+    return std::nullopt;
+  }
+  return (line_a.dx * line_b.dy - line_a.dy * line_b.dx) / scale;
+}
+
+std::optional<double> AngleDimensionResidual(
+    const cccad::solver::v1::AngleDimension& angle_dimension,
+    const SolverModel& model,
+    double target) {
+  const auto line_a = GetLineGeometry(model, angle_dimension.line_a_id());
+  const auto line_b = GetLineGeometry(model, angle_dimension.line_b_id());
+  if (!line_a.has_value() || !line_b.has_value()) {
+    return std::nullopt;
+  }
+  const double scale = line_a->length * line_b->length;
+  if (scale < kMinimumRadius) {
+    return std::nullopt;
+  }
+
+  const double cross = line_a->dx * line_b->dy - line_a->dy * line_b->dx;
+  const double dot = line_a->dx * line_b->dx + line_a->dy * line_b->dy;
+  double measured = 0.0;
+  switch (angle_dimension.orientation()) {
+    case cccad::solver::v1::ANGLE_ORIENTATION_CW:
+      measured = NormalizePositiveAngle(-std::atan2(cross, dot));
+      break;
+    case cccad::solver::v1::ANGLE_ORIENTATION_CCW:
+      measured = NormalizePositiveAngle(std::atan2(cross, dot));
+      break;
+    case cccad::solver::v1::ANGLE_ORIENTATION_UNSPECIFIED:
+      measured = std::acos(ClampUnit(dot / scale));
+      break;
+  }
+  return NormalizeSignedAngle(measured - target);
+}
+
+double DimensionTarget(const cccad::solver::v1::Dimension& dimension,
+                       const SolverModel& model,
+                       double default_value) {
+  if (const auto override_it = model.dimension_value_overrides.find(dimension.id());
+      override_it != model.dimension_value_overrides.end()) {
+    return override_it->second;
+  }
+  return default_value;
+}
+
+struct RoundGeometry {
+  const SolverPoint* center = nullptr;
+  double radius = 0.0;
+};
+
+std::optional<RoundGeometry> GetRoundGeometry(const SolverModel& model,
+                                              const std::string& entity_id) {
+  if (const auto circle_it = model.circles.find(entity_id); circle_it != model.circles.end()) {
+    const auto center_it = model.points.find(circle_it->second.center_point_id);
+    if (center_it == model.points.end()) {
+      return std::nullopt;
+    }
+    return RoundGeometry{.center = &center_it->second, .radius = circle_it->second.radius};
+  }
+
+  if (const auto arc_it = model.arcs.find(entity_id); arc_it != model.arcs.end()) {
+    const auto center_it = model.points.find(arc_it->second.center_point_id);
+    const auto start_it = model.points.find(arc_it->second.start_point_id);
+    if (center_it == model.points.end() || start_it == model.points.end()) {
+      return std::nullopt;
+    }
+    return RoundGeometry{.center = &center_it->second,
+                         .radius = Distance(center_it->second.x, center_it->second.y,
+                                            start_it->second.x, start_it->second.y)};
+  }
+
+  return std::nullopt;
+}
+
+std::optional<double> LineRoundTangentResidual(const SolverModel& model,
+                                               const std::string& line_id,
+                                               const std::string& round_id) {
+  const auto round = GetRoundGeometry(model, round_id);
+  if (!round.has_value()) {
+    return std::nullopt;
+  }
+  const auto line = GetLineGeometry(model, line_id);
+  if (!line.has_value() || line->length < kMinimumRadius) {
+    return std::nullopt;
+  }
+  const double cross = line->dx * (round->center->y - line->start->y) -
+                       line->dy * (round->center->x - line->start->x);
+  return std::abs(cross) / line->length - round->radius;
+}
+
+std::optional<double> RoundRoundTangentResidual(const SolverModel& model,
+                                                const std::string& round_a_id,
+                                                const std::string& round_b_id,
+                                                cccad::solver::v1::TangentBranch branch) {
+  const auto round_a = GetRoundGeometry(model, round_a_id);
+  const auto round_b = GetRoundGeometry(model, round_b_id);
+  if (!round_a.has_value() || !round_b.has_value()) {
+    return std::nullopt;
+  }
+  const double center_distance = Distance(round_a->center->x, round_a->center->y,
+                                          round_b->center->x, round_b->center->y);
+  if (branch == cccad::solver::v1::TANGENT_BRANCH_INTERNAL) {
+    return center_distance - std::abs(round_a->radius - round_b->radius);
+  }
+  return center_distance - (round_a->radius + round_b->radius);
+}
+
+std::optional<double> TangentResidual(const SolverModel& model,
+                                      const cccad::solver::v1::TangentConstraint& tangent) {
+  const bool a_is_line = model.lines.contains(tangent.entity_a_id());
+  const bool b_is_line = model.lines.contains(tangent.entity_b_id());
+  const bool a_is_round = GetRoundGeometry(model, tangent.entity_a_id()).has_value();
+  const bool b_is_round = GetRoundGeometry(model, tangent.entity_b_id()).has_value();
+  if (a_is_line && b_is_round) {
+    return LineRoundTangentResidual(model, tangent.entity_a_id(), tangent.entity_b_id());
+  }
+  if (b_is_line && a_is_round) {
+    return LineRoundTangentResidual(model, tangent.entity_b_id(), tangent.entity_a_id());
+  }
+  if (a_is_round && b_is_round) {
+    return RoundRoundTangentResidual(model, tangent.entity_a_id(), tangent.entity_b_id(),
+                                     tangent.branch());
+  }
+  return std::nullopt;
+}
+
+std::optional<double> PointOnLineResidual(const SolverModel& model,
+                                          const std::string& point_id,
+                                          const std::string& line_id) {
+  const auto point_it = model.points.find(point_id);
+  const auto line = GetLineGeometry(model, line_id);
+  if (point_it == model.points.end() || !line.has_value() || line->length < kMinimumRadius) {
+    return std::nullopt;
+  }
+  const double cross = line->dx * (point_it->second.y - line->start->y) -
+                       line->dy * (point_it->second.x - line->start->x);
+  return cross / line->length;
+}
+
+std::optional<double> PointOnCircleResidual(const SolverModel& model,
+                                            const std::string& point_id,
+                                            const std::string& circle_id) {
+  const auto point_it = model.points.find(point_id);
+  const auto circle_it = model.circles.find(circle_id);
+  if (point_it == model.points.end() || circle_it == model.circles.end()) {
+    return std::nullopt;
+  }
+  const auto center_it = model.points.find(circle_it->second.center_point_id);
+  if (center_it == model.points.end()) {
+    return std::nullopt;
+  }
+  return Distance(point_it->second.x, point_it->second.y, center_it->second.x,
+                  center_it->second.y) -
+         circle_it->second.radius;
+}
+
+std::optional<double> ArcRadiusConsistencyResidual(const SolverModel& model,
+                                                   const SolverArc& arc) {
+  const auto center_it = model.points.find(arc.center_point_id);
+  const auto start_it = model.points.find(arc.start_point_id);
+  const auto end_it = model.points.find(arc.end_point_id);
+  if (center_it == model.points.end() || start_it == model.points.end() ||
+      end_it == model.points.end()) {
+    return std::nullopt;
+  }
+  const double start_radius = Distance(center_it->second.x, center_it->second.y,
+                                       start_it->second.x, start_it->second.y);
+  const double end_radius = Distance(center_it->second.x, center_it->second.y,
+                                     end_it->second.x, end_it->second.y);
+  return end_radius - start_radius;
+}
+
+struct SolverVariable {
   enum class Kind { kPointX, kPointY, kCircleRadius };
   Kind kind = Kind::kPointX;
   std::string id;
@@ -43,9 +290,9 @@ std::unordered_set<std::string> MakeScopeSet(const std::vector<std::string>& ids
   return std::unordered_set<std::string>(ids.begin(), ids.end());
 }
 
-std::vector<Stage1Variable> BuildVariables(const Stage1Model& model,
+std::vector<SolverVariable> BuildVariables(const SolverModel& model,
                                            const std::unordered_set<std::string>* entity_scope = nullptr) {
-  std::vector<Stage1Variable> variables;
+  std::vector<SolverVariable> variables;
   std::vector<std::string> ids;
 
   ids.reserve(model.points.size());
@@ -59,10 +306,10 @@ std::vector<Stage1Variable> BuildVariables(const Stage1Model& model,
     }
     const auto& point = model.points.at(id);
     if (!point.lock_x) {
-      variables.push_back({Stage1Variable::Kind::kPointX, id});
+      variables.push_back({SolverVariable::Kind::kPointX, id});
     }
     if (!point.lock_y) {
-      variables.push_back({Stage1Variable::Kind::kPointY, id});
+      variables.push_back({SolverVariable::Kind::kPointY, id});
     }
   }
 
@@ -78,25 +325,25 @@ std::vector<Stage1Variable> BuildVariables(const Stage1Model& model,
     }
     const auto& circle = model.circles.at(id);
     if (!circle.lock_radius) {
-      variables.push_back({Stage1Variable::Kind::kCircleRadius, id});
+      variables.push_back({SolverVariable::Kind::kCircleRadius, id});
     }
   }
 
   return variables;
 }
 
-std::vector<double> ReadVariables(const Stage1Model& model, const std::vector<Stage1Variable>& variables) {
+std::vector<double> ReadVariables(const SolverModel& model, const std::vector<SolverVariable>& variables) {
   std::vector<double> x;
   x.reserve(variables.size());
   for (const auto& variable : variables) {
     switch (variable.kind) {
-      case Stage1Variable::Kind::kPointX:
+      case SolverVariable::Kind::kPointX:
         x.push_back(model.points.at(variable.id).x);
         break;
-      case Stage1Variable::Kind::kPointY:
+      case SolverVariable::Kind::kPointY:
         x.push_back(model.points.at(variable.id).y);
         break;
-      case Stage1Variable::Kind::kCircleRadius:
+      case SolverVariable::Kind::kCircleRadius:
         x.push_back(model.circles.at(variable.id).radius);
         break;
     }
@@ -104,18 +351,18 @@ std::vector<double> ReadVariables(const Stage1Model& model, const std::vector<St
   return x;
 }
 
-void WriteVariables(Stage1Model* model, const std::vector<Stage1Variable>& variables,
+void WriteVariables(SolverModel* model, const std::vector<SolverVariable>& variables,
                     const std::vector<double>& x) {
   for (std::size_t index = 0; index < variables.size(); ++index) {
     const auto& variable = variables[index];
     switch (variable.kind) {
-      case Stage1Variable::Kind::kPointX:
+      case SolverVariable::Kind::kPointX:
         (*model).points[variable.id].x = x[index];
         break;
-      case Stage1Variable::Kind::kPointY:
+      case SolverVariable::Kind::kPointY:
         (*model).points[variable.id].y = x[index];
         break;
-      case Stage1Variable::Kind::kCircleRadius:
+      case SolverVariable::Kind::kCircleRadius:
         (*model).circles[variable.id].radius = std::max(x[index], kMinimumRadius);
         break;
     }
@@ -167,8 +414,37 @@ void AddResidualEntry(std::vector<ResidualEntry>* residuals,
                         .diagnostic = std::move(diagnostic)});
 }
 
+void AddArcResiduals(const SolverModel& model,
+                     std::vector<double>* residuals,
+                     const std::unordered_set<std::string>* entity_scope = nullptr) {
+  for (const auto& [arc_id, arc] : model.arcs) {
+    if (!ScopeContains(entity_scope, arc_id)) {
+      continue;
+    }
+    const auto residual = ArcRadiusConsistencyResidual(model, arc);
+    if (residual.has_value()) {
+      AddScaledResidual(residuals, *residual);
+    }
+  }
+}
+
+void AddDiagnosticArcResiduals(const SolverModel& model,
+                               std::vector<ResidualEntry>* residuals) {
+  for (const auto& [arc_id, arc] : model.arcs) {
+    const auto residual = ArcRadiusConsistencyResidual(model, arc);
+    if (!residual.has_value()) {
+      continue;
+    }
+    AddResidualEntry(residuals, *residual,
+                     {.code = "entity_residual",
+                      .message = "arc radius consistency residual is above tolerance",
+                      .entity_ids = {arc_id, arc.center_point_id, arc.start_point_id,
+                                     arc.end_point_id}});
+  }
+}
+
 void AddDiagnosticResiduals(const cccad::solver::v1::Constraint& constraint,
-                            const Stage1Model& model,
+                            const SolverModel& model,
                             std::vector<ResidualEntry>* residuals) {
   if (!IsActive(constraint.status())) {
     return;
@@ -224,20 +500,154 @@ void AddDiagnosticResiduals(const cccad::solver::v1::Constraint& constraint,
                         .constraint_ids = {constraint.id()}});
       break;
     }
-    case cccad::solver::v1::Constraint::kFixed:
     case cccad::solver::v1::Constraint::kParallel:
-    case cccad::solver::v1::Constraint::kPerpendicular:
-    case cccad::solver::v1::Constraint::kTangent:
-    case cccad::solver::v1::Constraint::kEqual:
-    case cccad::solver::v1::Constraint::kMidpoint:
-    case cccad::solver::v1::Constraint::kConcentric:
+    case cccad::solver::v1::Constraint::kPerpendicular: {
+      const auto line_a = GetLineGeometry(
+          model, constraint.kind_case() == cccad::solver::v1::Constraint::kParallel
+                     ? constraint.parallel().line_a_id()
+                     : constraint.perpendicular().line_a_id());
+      const auto line_b = GetLineGeometry(
+          model, constraint.kind_case() == cccad::solver::v1::Constraint::kParallel
+                     ? constraint.parallel().line_b_id()
+                     : constraint.perpendicular().line_b_id());
+      if (!line_a.has_value() || !line_b.has_value()) {
+        return;
+      }
+      const double scale = line_a->length * line_b->length;
+      if (scale < kMinimumRadius) {
+        return;
+      }
+      const bool parallel = constraint.kind_case() == cccad::solver::v1::Constraint::kParallel;
+      AddResidualEntry(residuals,
+                       parallel ? (line_a->dx * line_b->dy - line_a->dy * line_b->dx) / scale
+                                : (line_a->dx * line_b->dx + line_a->dy * line_b->dy) / scale,
+                       {.code = "constraint_residual",
+                        .message = parallel
+                                       ? "parallel constraint residual is above tolerance"
+                                       : "perpendicular constraint residual is above tolerance",
+                        .entity_ids = {parallel ? constraint.parallel().line_a_id()
+                                                : constraint.perpendicular().line_a_id(),
+                                       parallel ? constraint.parallel().line_b_id()
+                                                : constraint.perpendicular().line_b_id()},
+                        .constraint_ids = {constraint.id()}});
+      break;
+    }
+    case cccad::solver::v1::Constraint::kEqual: {
+      if (constraint.equal().kind() == cccad::solver::v1::EQUAL_KIND_LENGTH) {
+        const auto line_a = GetLineGeometry(model, constraint.equal().entity_a_id());
+        const auto line_b = GetLineGeometry(model, constraint.equal().entity_b_id());
+        if (!line_a.has_value() || !line_b.has_value()) {
+          return;
+        }
+        AddResidualEntry(residuals, line_a->length - line_b->length,
+                         {.code = "constraint_residual",
+                          .message = "equal length constraint residual is above tolerance",
+                          .entity_ids = {constraint.equal().entity_a_id(),
+                                         constraint.equal().entity_b_id()},
+                          .constraint_ids = {constraint.id()}});
+      } else if (constraint.equal().kind() == cccad::solver::v1::EQUAL_KIND_RADIUS) {
+        const auto round_a = GetRoundGeometry(model, constraint.equal().entity_a_id());
+        const auto round_b = GetRoundGeometry(model, constraint.equal().entity_b_id());
+        if (!round_a.has_value() || !round_b.has_value()) {
+          return;
+        }
+        AddResidualEntry(residuals, round_a->radius - round_b->radius,
+                         {.code = "constraint_residual",
+                          .message = "equal radius constraint residual is above tolerance",
+                          .entity_ids = {constraint.equal().entity_a_id(),
+                                         constraint.equal().entity_b_id()},
+                          .constraint_ids = {constraint.id()}});
+      }
+      break;
+    }
+    case cccad::solver::v1::Constraint::kMidpoint: {
+      const auto midpoint_it = model.points.find(constraint.midpoint().midpoint_id());
+      const auto point_a_it = model.points.find(constraint.midpoint().point_a_id());
+      const auto point_b_it = model.points.find(constraint.midpoint().point_b_id());
+      if (midpoint_it == model.points.end() || point_a_it == model.points.end() ||
+          point_b_it == model.points.end()) {
+        return;
+      }
+      const ResidualDiagnosticSource diagnostic{
+          .code = "constraint_residual",
+          .message = "midpoint constraint residual is above tolerance",
+          .entity_ids = {constraint.midpoint().midpoint_id(), constraint.midpoint().point_a_id(),
+                         constraint.midpoint().point_b_id()},
+          .constraint_ids = {constraint.id()}};
+      AddResidualEntry(residuals,
+                       midpoint_it->second.x - (point_a_it->second.x + point_b_it->second.x) * 0.5,
+                       diagnostic);
+      AddResidualEntry(residuals,
+                       midpoint_it->second.y - (point_a_it->second.y + point_b_it->second.y) * 0.5,
+                       diagnostic);
+      break;
+    }
+    case cccad::solver::v1::Constraint::kConcentric: {
+      const auto round_a = GetRoundGeometry(model, constraint.concentric().circle_a_id());
+      const auto round_b = GetRoundGeometry(model, constraint.concentric().circle_b_id());
+      if (!round_a.has_value() || !round_b.has_value()) {
+        return;
+      }
+      const ResidualDiagnosticSource diagnostic{
+          .code = "constraint_residual",
+          .message = "concentric constraint residual is above tolerance",
+          .entity_ids = {constraint.concentric().circle_a_id(),
+                         constraint.concentric().circle_b_id()},
+          .constraint_ids = {constraint.id()}};
+      AddResidualEntry(residuals, round_a->center->x - round_b->center->x, diagnostic);
+      AddResidualEntry(residuals, round_a->center->y - round_b->center->y, diagnostic);
+      break;
+    }
+    case cccad::solver::v1::Constraint::kTangent: {
+      const auto residual = TangentResidual(model, constraint.tangent());
+      if (!residual.has_value()) {
+        return;
+      }
+      AddResidualEntry(residuals, *residual,
+                       {.code = "constraint_residual",
+                        .message = "tangent constraint residual is above tolerance",
+                        .entity_ids = {constraint.tangent().entity_a_id(),
+                                       constraint.tangent().entity_b_id()},
+                        .constraint_ids = {constraint.id()}});
+      break;
+    }
+    case cccad::solver::v1::Constraint::kPointOnLine: {
+      const auto residual = PointOnLineResidual(model, constraint.point_on_line().point_id(),
+                                                constraint.point_on_line().line_id());
+      if (!residual.has_value()) {
+        return;
+      }
+      AddResidualEntry(residuals, *residual,
+                       {.code = "constraint_residual",
+                        .message = "point-on-line constraint residual is above tolerance",
+                        .entity_ids = {constraint.point_on_line().point_id(),
+                                       constraint.point_on_line().line_id()},
+                        .constraint_ids = {constraint.id()}});
+      break;
+    }
+    case cccad::solver::v1::Constraint::kPointOnCircle: {
+      const auto residual =
+          PointOnCircleResidual(model, constraint.point_on_circle().point_id(),
+                                constraint.point_on_circle().circle_id());
+      if (!residual.has_value()) {
+        return;
+      }
+      AddResidualEntry(residuals, *residual,
+                       {.code = "constraint_residual",
+                        .message = "point-on-circle constraint residual is above tolerance",
+                        .entity_ids = {constraint.point_on_circle().point_id(),
+                                       constraint.point_on_circle().circle_id()},
+                        .constraint_ids = {constraint.id()}});
+      break;
+    }
+    case cccad::solver::v1::Constraint::kFixed:
     case cccad::solver::v1::Constraint::KIND_NOT_SET:
       break;
   }
 }
 
 void AddDiagnosticDimensionResiduals(const cccad::solver::v1::Dimension& dimension,
-                                     const Stage1Model& model,
+                                     const SolverModel& model,
                                      std::vector<ResidualEntry>* residuals) {
   if (!IsActive(dimension.status()) || !dimension.driving()) {
     return;
@@ -245,24 +655,43 @@ void AddDiagnosticDimensionResiduals(const cccad::solver::v1::Dimension& dimensi
 
   switch (dimension.kind_case()) {
     case cccad::solver::v1::Dimension::kDistance: {
-      if (dimension.distance().ref_kind() != cccad::solver::v1::DISTANCE_REFERENCE_KIND_UNSPECIFIED &&
-          dimension.distance().ref_kind() != cccad::solver::v1::DISTANCE_REFERENCE_KIND_POINT_POINT) {
-        return;
+      const double target = DimensionTarget(dimension, model, dimension.distance().value());
+      std::optional<double> measured;
+      if (dimension.distance().ref_kind() == cccad::solver::v1::DISTANCE_REFERENCE_KIND_UNSPECIFIED ||
+          dimension.distance().ref_kind() == cccad::solver::v1::DISTANCE_REFERENCE_KIND_POINT_POINT) {
+        const auto point_a_it = model.points.find(dimension.distance().ref_a_id());
+        const auto point_b_it = model.points.find(dimension.distance().ref_b_id());
+        if (point_a_it == model.points.end() || point_b_it == model.points.end()) {
+          return;
+        }
+        measured = Distance(point_a_it->second.x, point_a_it->second.y,
+                            point_b_it->second.x, point_b_it->second.y);
+      } else if (dimension.distance().ref_kind() ==
+                 cccad::solver::v1::DISTANCE_REFERENCE_KIND_POINT_LINE) {
+        measured = PointLineDistance(model, dimension.distance().ref_a_id(),
+                                     dimension.distance().ref_b_id());
+      } else if (dimension.distance().ref_kind() ==
+                 cccad::solver::v1::DISTANCE_REFERENCE_KIND_LINE_LINE) {
+        const auto line_a = GetLineGeometry(model, dimension.distance().ref_a_id());
+        const auto line_b = GetLineGeometry(model, dimension.distance().ref_b_id());
+        if (!line_a.has_value() || !line_b.has_value()) {
+          return;
+        }
+        measured = LineLineDistance(*line_a, *line_b);
+        if (const auto parallel = ParallelResidual(*line_a, *line_b); parallel.has_value()) {
+          AddResidualEntry(residuals, *parallel,
+                           {.code = "dimension_residual",
+                            .message = "line-line distance dimension parallel residual is above tolerance",
+                            .entity_ids = {dimension.distance().ref_a_id(),
+                                           dimension.distance().ref_b_id()},
+                            .dimension_ids = {dimension.id()}});
+        }
       }
-      const auto point_a_it = model.points.find(dimension.distance().ref_a_id());
-      const auto point_b_it = model.points.find(dimension.distance().ref_b_id());
-      if (point_a_it == model.points.end() || point_b_it == model.points.end()) {
+      if (!measured.has_value()) {
         return;
-      }
-      double target = dimension.distance().value();
-      if (const auto override_it = model.dimension_value_overrides.find(dimension.id());
-          override_it != model.dimension_value_overrides.end()) {
-        target = override_it->second;
       }
       AddResidualEntry(residuals,
-                       Distance(point_a_it->second.x, point_a_it->second.y,
-                                point_b_it->second.x, point_b_it->second.y) -
-                           target,
+                       *measured - target,
                        {.code = "dimension_residual",
                         .message = "distance dimension residual is above tolerance",
                         .entity_ids = {dimension.distance().ref_a_id(), dimension.distance().ref_b_id()},
@@ -274,11 +703,7 @@ void AddDiagnosticDimensionResiduals(const cccad::solver::v1::Dimension& dimensi
       if (circle_it == model.circles.end()) {
         return;
       }
-      double target = dimension.radius().value();
-      if (const auto override_it = model.dimension_value_overrides.find(dimension.id());
-          override_it != model.dimension_value_overrides.end()) {
-        target = override_it->second;
-      }
+      const double target = DimensionTarget(dimension, model, dimension.radius().value());
       AddResidualEntry(residuals, circle_it->second.radius - target,
                        {.code = "dimension_residual",
                         .message = "radius dimension residual is above tolerance",
@@ -291,11 +716,7 @@ void AddDiagnosticDimensionResiduals(const cccad::solver::v1::Dimension& dimensi
       if (circle_it == model.circles.end()) {
         return;
       }
-      double target = dimension.diameter().value() * 0.5;
-      if (const auto override_it = model.dimension_value_overrides.find(dimension.id());
-          override_it != model.dimension_value_overrides.end()) {
-        target = override_it->second * 0.5;
-      }
+      const double target = DimensionTarget(dimension, model, dimension.diameter().value()) * 0.5;
       AddResidualEntry(residuals, circle_it->second.radius - target,
                        {.code = "dimension_residual",
                         .message = "diameter dimension residual is above tolerance",
@@ -303,14 +724,26 @@ void AddDiagnosticDimensionResiduals(const cccad::solver::v1::Dimension& dimensi
                         .dimension_ids = {dimension.id()}});
       break;
     }
-    case cccad::solver::v1::Dimension::kAngle:
+    case cccad::solver::v1::Dimension::kAngle: {
+      const double target = DimensionTarget(dimension, model, dimension.angle().value_rad());
+      const auto residual = AngleDimensionResidual(dimension.angle(), model, target);
+      if (!residual.has_value()) {
+        return;
+      }
+      AddResidualEntry(residuals, *residual,
+                       {.code = "dimension_residual",
+                        .message = "angle dimension residual is above tolerance",
+                        .entity_ids = {dimension.angle().line_a_id(), dimension.angle().line_b_id()},
+                        .dimension_ids = {dimension.id()}});
+      break;
+    }
     case cccad::solver::v1::Dimension::KIND_NOT_SET:
       break;
   }
 }
 
 void AddConstraintResiduals(const cccad::solver::v1::Constraint& constraint,
-                            const Stage1Model& model, std::vector<double>* residuals) {
+                            const SolverModel& model, std::vector<double>* residuals) {
   if (!IsActive(constraint.status())) {
     return;
   }
@@ -352,44 +785,144 @@ void AddConstraintResiduals(const cccad::solver::v1::Constraint& constraint,
       AddScaledResidual(residuals, end_it->second.x - start_it->second.x);
       break;
     }
-    case cccad::solver::v1::Constraint::kFixed:
-      break;
     case cccad::solver::v1::Constraint::kParallel:
-    case cccad::solver::v1::Constraint::kPerpendicular:
-    case cccad::solver::v1::Constraint::kTangent:
-    case cccad::solver::v1::Constraint::kEqual:
-    case cccad::solver::v1::Constraint::kMidpoint:
-    case cccad::solver::v1::Constraint::kConcentric:
+    case cccad::solver::v1::Constraint::kPerpendicular: {
+      const auto line_a = GetLineGeometry(
+          model, constraint.kind_case() == cccad::solver::v1::Constraint::kParallel
+                     ? constraint.parallel().line_a_id()
+                     : constraint.perpendicular().line_a_id());
+      const auto line_b = GetLineGeometry(
+          model, constraint.kind_case() == cccad::solver::v1::Constraint::kParallel
+                     ? constraint.parallel().line_b_id()
+                     : constraint.perpendicular().line_b_id());
+      if (!line_a.has_value() || !line_b.has_value()) {
+        return;
+      }
+      const double scale = line_a->length * line_b->length;
+      if (scale < kMinimumRadius) {
+        return;
+      }
+      if (constraint.kind_case() == cccad::solver::v1::Constraint::kParallel) {
+        AddScaledResidual(residuals,
+                          (line_a->dx * line_b->dy - line_a->dy * line_b->dx) / scale);
+      } else {
+        AddScaledResidual(residuals,
+                          (line_a->dx * line_b->dx + line_a->dy * line_b->dy) / scale);
+      }
+      break;
+    }
+    case cccad::solver::v1::Constraint::kEqual: {
+      if (constraint.equal().kind() == cccad::solver::v1::EQUAL_KIND_LENGTH) {
+        const auto line_a = GetLineGeometry(model, constraint.equal().entity_a_id());
+        const auto line_b = GetLineGeometry(model, constraint.equal().entity_b_id());
+        if (!line_a.has_value() || !line_b.has_value()) {
+          return;
+        }
+        AddScaledResidual(residuals, line_a->length - line_b->length);
+      } else if (constraint.equal().kind() == cccad::solver::v1::EQUAL_KIND_RADIUS) {
+        const auto round_a = GetRoundGeometry(model, constraint.equal().entity_a_id());
+        const auto round_b = GetRoundGeometry(model, constraint.equal().entity_b_id());
+        if (!round_a.has_value() || !round_b.has_value()) {
+          return;
+        }
+        AddScaledResidual(residuals, round_a->radius - round_b->radius);
+      }
+      break;
+    }
+    case cccad::solver::v1::Constraint::kMidpoint: {
+      const auto midpoint_it = model.points.find(constraint.midpoint().midpoint_id());
+      const auto point_a_it = model.points.find(constraint.midpoint().point_a_id());
+      const auto point_b_it = model.points.find(constraint.midpoint().point_b_id());
+      if (midpoint_it == model.points.end() || point_a_it == model.points.end() ||
+          point_b_it == model.points.end()) {
+        return;
+      }
+      AddScaledResidual(residuals,
+                        midpoint_it->second.x - (point_a_it->second.x + point_b_it->second.x) * 0.5);
+      AddScaledResidual(residuals,
+                        midpoint_it->second.y - (point_a_it->second.y + point_b_it->second.y) * 0.5);
+      break;
+    }
+    case cccad::solver::v1::Constraint::kConcentric: {
+      const auto round_a = GetRoundGeometry(model, constraint.concentric().circle_a_id());
+      const auto round_b = GetRoundGeometry(model, constraint.concentric().circle_b_id());
+      if (!round_a.has_value() || !round_b.has_value()) {
+        return;
+      }
+      AddScaledResidual(residuals, round_a->center->x - round_b->center->x);
+      AddScaledResidual(residuals, round_a->center->y - round_b->center->y);
+      break;
+    }
+    case cccad::solver::v1::Constraint::kTangent: {
+      const auto residual = TangentResidual(model, constraint.tangent());
+      if (residual.has_value()) {
+        AddScaledResidual(residuals, *residual);
+      }
+      break;
+    }
+    case cccad::solver::v1::Constraint::kPointOnLine: {
+      const auto residual = PointOnLineResidual(model, constraint.point_on_line().point_id(),
+                                                constraint.point_on_line().line_id());
+      if (residual.has_value()) {
+        AddScaledResidual(residuals, *residual);
+      }
+      break;
+    }
+    case cccad::solver::v1::Constraint::kPointOnCircle: {
+      const auto residual =
+          PointOnCircleResidual(model, constraint.point_on_circle().point_id(),
+                                constraint.point_on_circle().circle_id());
+      if (residual.has_value()) {
+        AddScaledResidual(residuals, *residual);
+      }
+      break;
+    }
+    case cccad::solver::v1::Constraint::kFixed:
     case cccad::solver::v1::Constraint::KIND_NOT_SET:
       break;
   }
 }
 
 void AddDimensionResiduals(const cccad::solver::v1::Dimension& dimension,
-                           const Stage1Model& model, std::vector<double>* residuals) {
+                           const SolverModel& model, std::vector<double>* residuals) {
   if (!IsActive(dimension.status()) || !dimension.driving()) {
     return;
   }
 
   switch (dimension.kind_case()) {
     case cccad::solver::v1::Dimension::kDistance: {
-      if (dimension.distance().ref_kind() != cccad::solver::v1::DISTANCE_REFERENCE_KIND_UNSPECIFIED &&
-          dimension.distance().ref_kind() != cccad::solver::v1::DISTANCE_REFERENCE_KIND_POINT_POINT) {
-        return;
+      const double target = DimensionTarget(dimension, model, dimension.distance().value());
+      if (dimension.distance().ref_kind() == cccad::solver::v1::DISTANCE_REFERENCE_KIND_UNSPECIFIED ||
+          dimension.distance().ref_kind() == cccad::solver::v1::DISTANCE_REFERENCE_KIND_POINT_POINT) {
+        const auto point_a_it = model.points.find(dimension.distance().ref_a_id());
+        const auto point_b_it = model.points.find(dimension.distance().ref_b_id());
+        if (point_a_it == model.points.end() || point_b_it == model.points.end()) {
+          return;
+        }
+        AddScaledResidual(residuals, Distance(point_a_it->second.x, point_a_it->second.y,
+                                              point_b_it->second.x, point_b_it->second.y) -
+                                          target);
+      } else if (dimension.distance().ref_kind() ==
+                 cccad::solver::v1::DISTANCE_REFERENCE_KIND_POINT_LINE) {
+        const auto measured = PointLineDistance(model, dimension.distance().ref_a_id(),
+                                                dimension.distance().ref_b_id());
+        if (measured.has_value()) {
+          AddScaledResidual(residuals, *measured - target);
+        }
+      } else if (dimension.distance().ref_kind() ==
+                 cccad::solver::v1::DISTANCE_REFERENCE_KIND_LINE_LINE) {
+        const auto line_a = GetLineGeometry(model, dimension.distance().ref_a_id());
+        const auto line_b = GetLineGeometry(model, dimension.distance().ref_b_id());
+        if (!line_a.has_value() || !line_b.has_value()) {
+          return;
+        }
+        if (const auto parallel = ParallelResidual(*line_a, *line_b); parallel.has_value()) {
+          AddScaledResidual(residuals, *parallel);
+        }
+        if (const auto measured = LineLineDistance(*line_a, *line_b); measured.has_value()) {
+          AddScaledResidual(residuals, *measured - target);
+        }
       }
-      const auto point_a_it = model.points.find(dimension.distance().ref_a_id());
-      const auto point_b_it = model.points.find(dimension.distance().ref_b_id());
-      if (point_a_it == model.points.end() || point_b_it == model.points.end()) {
-        return;
-      }
-      double target = dimension.distance().value();
-      if (const auto override_it = model.dimension_value_overrides.find(dimension.id());
-          override_it != model.dimension_value_overrides.end()) {
-        target = override_it->second;
-      }
-      AddScaledResidual(residuals, Distance(point_a_it->second.x, point_a_it->second.y,
-                                            point_b_it->second.x, point_b_it->second.y) -
-                                        target);
       break;
     }
     case cccad::solver::v1::Dimension::kRadius: {
@@ -397,11 +930,7 @@ void AddDimensionResiduals(const cccad::solver::v1::Dimension& dimension,
       if (circle_it == model.circles.end()) {
         return;
       }
-      double target = dimension.radius().value();
-      if (const auto override_it = model.dimension_value_overrides.find(dimension.id());
-          override_it != model.dimension_value_overrides.end()) {
-        target = override_it->second;
-      }
+      const double target = DimensionTarget(dimension, model, dimension.radius().value());
       AddScaledResidual(residuals, circle_it->second.radius - target);
       break;
     }
@@ -410,27 +939,33 @@ void AddDimensionResiduals(const cccad::solver::v1::Dimension& dimension,
       if (circle_it == model.circles.end()) {
         return;
       }
-      double target = dimension.diameter().value() * 0.5;
-      if (const auto override_it = model.dimension_value_overrides.find(dimension.id());
-          override_it != model.dimension_value_overrides.end()) {
-        target = override_it->second * 0.5;
-      }
+      const double target = DimensionTarget(dimension, model, dimension.diameter().value()) * 0.5;
       AddScaledResidual(residuals, circle_it->second.radius - target);
       break;
     }
-    case cccad::solver::v1::Dimension::kAngle:
+    case cccad::solver::v1::Dimension::kAngle: {
+      const double target = DimensionTarget(dimension, model, dimension.angle().value_rad());
+      const auto residual = AngleDimensionResidual(dimension.angle(), model, target);
+      if (residual.has_value()) {
+        AddScaledResidual(residuals, *residual);
+      }
+      break;
+    }
     case cccad::solver::v1::Dimension::KIND_NOT_SET:
       break;
   }
 }
 
 std::vector<double> EvaluateResiduals(const cccad::solver::v1::SketchModel& proto_model,
-                                      const Stage1Model& model,
+                                      const SolverModel& model,
                                       const cccad::solver::v1::SolverOptions& options,
                                       bool include_soft_residuals = true,
                                       const std::unordered_set<std::string>* constraint_scope = nullptr,
-                                      const std::unordered_set<std::string>* dimension_scope = nullptr) {
+                                      const std::unordered_set<std::string>* dimension_scope = nullptr,
+                                      const std::unordered_set<std::string>* entity_scope = nullptr) {
   std::vector<double> residuals;
+
+  AddArcResiduals(model, &residuals, entity_scope);
 
   for (const auto& constraint : proto_model.constraints()) {
     if (!ScopeContains(constraint_scope, constraint.id())) {
@@ -488,12 +1023,13 @@ std::vector<double> EvaluateResiduals(const cccad::solver::v1::SketchModel& prot
 
 std::vector<ResidualEntry> EvaluateDiagnosticResiduals(
     const cccad::solver::v1::SketchModel& proto_model,
-    const Stage1Model& model,
+    const SolverModel& model,
     const cccad::solver::v1::SolverOptions& options,
     const std::unordered_set<std::string>* constraint_scope = nullptr,
     const std::unordered_set<std::string>* dimension_scope = nullptr) {
   (void)options;
   std::vector<ResidualEntry> residuals;
+  AddDiagnosticArcResiduals(model, &residuals);
   for (const auto& constraint : proto_model.constraints()) {
     if (!ScopeContains(constraint_scope, constraint.id())) {
       continue;
@@ -573,13 +1109,14 @@ bool SolveLinearSystem(std::vector<std::vector<double>> a, std::vector<double> b
 
 std::vector<std::vector<double>> BuildJacobian(
     const cccad::solver::v1::SketchModel& proto_model,
-    const Stage1Model& model,
+    const SolverModel& model,
     const cccad::solver::v1::SolverOptions& options,
-    const std::vector<Stage1Variable>& variables,
+    const std::vector<SolverVariable>& variables,
     const std::vector<double>& x,
     const std::vector<double>& residuals,
     const std::unordered_set<std::string>* constraint_scope = nullptr,
-    const std::unordered_set<std::string>* dimension_scope = nullptr) {
+    const std::unordered_set<std::string>* dimension_scope = nullptr,
+    const std::unordered_set<std::string>* entity_scope = nullptr) {
   const std::size_t rows = residuals.size();
   const std::size_t cols = variables.size();
   std::vector<std::vector<double>> jacobian(rows, std::vector<double>(cols, 0.0));
@@ -589,11 +1126,11 @@ std::vector<std::vector<double>> BuildJacobian(
     const double h = 1e-6 * (1.0 + std::abs(x[col]));
     x_eps[col] += h;
 
-    Stage1Model perturbed = model;
+    SolverModel perturbed = model;
     WriteVariables(&perturbed, variables, x_eps);
     const std::vector<double> residuals_eps =
         EvaluateResiduals(proto_model, perturbed, options, false, constraint_scope,
-                          dimension_scope);
+                          dimension_scope, entity_scope);
 
     for (std::size_t row = 0; row < rows; ++row) {
       jacobian[row][col] = (residuals_eps[row] - residuals[row]) / h;
@@ -654,14 +1191,14 @@ int32_t MatrixRank(std::vector<std::vector<double>> matrix, double tolerance) {
 
 int32_t EstimateRankDegreesOfFreedom(
     const cccad::solver::v1::SketchModel& proto_model,
-    const Stage1Model& model,
+    const SolverModel& model,
     const cccad::solver::v1::SolverOptions& options,
     const std::unordered_set<std::string>* entity_scope,
     const std::unordered_set<std::string>* constraint_scope,
     const std::unordered_set<std::string>* dimension_scope,
     int32_t* rank_out = nullptr) {
-  Stage1Model scratch = model;
-  const std::vector<Stage1Variable> variables = BuildVariables(scratch, entity_scope);
+  SolverModel scratch = model;
+  const std::vector<SolverVariable> variables = BuildVariables(scratch, entity_scope);
   if (variables.empty()) {
     if (rank_out != nullptr) {
       *rank_out = 0;
@@ -673,7 +1210,7 @@ int32_t EstimateRankDegreesOfFreedom(
   WriteVariables(&scratch, variables, x);
   const std::vector<double> residuals =
       EvaluateResiduals(proto_model, scratch, options, false, constraint_scope,
-                        dimension_scope);
+                        dimension_scope, entity_scope);
   const double rank_tolerance =
       options.tolerance() > 0.0 && IsFinite(options.tolerance()) ? options.tolerance() * 10.0
                                                                  : 1e-7;
@@ -681,7 +1218,7 @@ int32_t EstimateRankDegreesOfFreedom(
                            ? 0
                            : MatrixRank(BuildJacobian(proto_model, scratch, options, variables, x,
                                                       residuals, constraint_scope,
-                                                      dimension_scope),
+                                                      dimension_scope, entity_scope),
                                         rank_tolerance);
   if (rank_out != nullptr) {
     *rank_out = rank;
@@ -691,14 +1228,14 @@ int32_t EstimateRankDegreesOfFreedom(
 
 }  // namespace
 
-Stage1Model BuildStage1Model(const cccad::solver::v1::SketchModel& model) {
-  Stage1Model result;
+SolverModel BuildSolverModel(const cccad::solver::v1::SketchModel& model) {
+  SolverModel result;
 
   for (const auto& entity : model.entities()) {
     result.entity_kinds.emplace(entity.id(), entity.kind_case());
     switch (entity.kind_case()) {
       case cccad::solver::v1::Entity::kPoint: {
-        Stage1Point point;
+        SolverPoint point;
         point.id = entity.id();
         point.x = entity.point().x();
         point.y = entity.point().y();
@@ -710,7 +1247,7 @@ Stage1Model BuildStage1Model(const cccad::solver::v1::SketchModel& model) {
         break;
       }
       case cccad::solver::v1::Entity::kLine: {
-        Stage1Line line;
+        SolverLine line;
         line.id = entity.id();
         line.start_point_id = entity.line().start_point_id();
         line.end_point_id = entity.line().end_point_id();
@@ -718,7 +1255,7 @@ Stage1Model BuildStage1Model(const cccad::solver::v1::SketchModel& model) {
         break;
       }
       case cccad::solver::v1::Entity::kCircle: {
-        Stage1Circle circle;
+        SolverCircle circle;
         circle.id = entity.id();
         circle.center_point_id = entity.circle().center_point_id();
         circle.radius = std::max(entity.circle().radius(), kMinimumRadius);
@@ -726,7 +1263,15 @@ Stage1Model BuildStage1Model(const cccad::solver::v1::SketchModel& model) {
         result.circles.emplace(circle.id, std::move(circle));
         break;
       }
-      case cccad::solver::v1::Entity::kArc:
+      case cccad::solver::v1::Entity::kArc: {
+        SolverArc arc;
+        arc.id = entity.id();
+        arc.center_point_id = entity.arc().center_point_id();
+        arc.start_point_id = entity.arc().start_point_id();
+        arc.end_point_id = entity.arc().end_point_id();
+        result.arcs.emplace(arc.id, std::move(arc));
+        break;
+      }
       case cccad::solver::v1::Entity::KIND_NOT_SET:
         break;
     }
@@ -765,7 +1310,15 @@ Stage1Model BuildStage1Model(const cccad::solver::v1::SketchModel& model) {
         }
         break;
       }
-      case cccad::solver::v1::Entity::kArc:
+      case cccad::solver::v1::Entity::kArc: {
+        const auto arc_it = result.arcs.find(entity_id);
+        if (arc_it != result.arcs.end()) {
+          lock_point(arc_it->second.center_point_id);
+          lock_point(arc_it->second.start_point_id);
+          lock_point(arc_it->second.end_point_id);
+        }
+        break;
+      }
       case cccad::solver::v1::Entity::KIND_NOT_SET:
         break;
     }
@@ -780,11 +1333,11 @@ Stage1Model BuildStage1Model(const cccad::solver::v1::SketchModel& model) {
   return result;
 }
 
-Stage1SolveResult SolveStage1Model(const cccad::solver::v1::SketchModel& proto_model,
-                                   Stage1Model initial_model,
+SolverResult SolveModel(const cccad::solver::v1::SketchModel& proto_model,
+                                   SolverModel initial_model,
                                    const cccad::solver::v1::SolverOptions& options,
                                    int32_t default_max_iterations) {
-  Stage1SolveResult result;
+  SolverResult result;
   result.model = std::move(initial_model);
   const int32_t max_iterations = options.max_iterations() > 0 ? options.max_iterations()
                                                               : default_max_iterations;
@@ -800,10 +1353,10 @@ Stage1SolveResult SolveStage1Model(const cccad::solver::v1::SketchModel& proto_m
         EstimateRankDegreesOfFreedom(proto_model, result.model, options, nullptr, nullptr, nullptr,
                                      &result.jacobian_rank);
     result.residual_diagnostics =
-        BuildStage1ResidualDiagnostics(proto_model, result.model, options);
+        BuildResidualDiagnostics(proto_model, result.model, options);
   };
 
-  const std::vector<Stage1Variable> variables = BuildVariables(result.model);
+  const std::vector<SolverVariable> variables = BuildVariables(result.model);
   if (variables.empty()) {
     const auto residuals = EvaluateResiduals(proto_model, result.model, options);
     result.residual_norm = std::sqrt(SquaredNorm(residuals));
@@ -836,7 +1389,7 @@ Stage1SolveResult SolveStage1Model(const cccad::solver::v1::SketchModel& proto_m
       std::vector<double> x_eps = x;
       const double h = 1e-6 * (1.0 + std::abs(x[col]));
       x_eps[col] += h;
-      Stage1Model perturbed = result.model;
+      SolverModel perturbed = result.model;
       WriteVariables(&perturbed, variables, x_eps);
       const std::vector<double> residuals_eps = EvaluateResiduals(proto_model, perturbed, options);
 
@@ -850,7 +1403,7 @@ Stage1SolveResult SolveStage1Model(const cccad::solver::v1::SketchModel& proto_m
         std::vector<double> x_eps_other = x;
         const double h_other = 1e-6 * (1.0 + std::abs(x[other]));
         x_eps_other[other] += h_other;
-        Stage1Model perturbed_other = result.model;
+        SolverModel perturbed_other = result.model;
         WriteVariables(&perturbed_other, variables, x_eps_other);
         const std::vector<double> residuals_eps_other =
             EvaluateResiduals(proto_model, perturbed_other, options);
@@ -887,7 +1440,7 @@ Stage1SolveResult SolveStage1Model(const cccad::solver::v1::SketchModel& proto_m
       step_norm += delta[i] * delta[i];
     }
 
-    Stage1Model candidate_model = result.model;
+    SolverModel candidate_model = result.model;
     WriteVariables(&candidate_model, variables, candidate);
     const double candidate_cost = SquaredNorm(EvaluateResiduals(proto_model, candidate_model, options));
     if (candidate_cost <= current_cost) {
@@ -912,9 +1465,9 @@ Stage1SolveResult SolveStage1Model(const cccad::solver::v1::SketchModel& proto_m
   return result;
 }
 
-int32_t EstimateStage1DegreesOfFreedom(
+int32_t EstimateSolverDegreesOfFreedom(
     const cccad::solver::v1::SketchModel& proto_model,
-    const Stage1Model& model,
+    const SolverModel& model,
     const cccad::solver::v1::SolverOptions& options,
     const std::vector<std::string>& entity_ids,
     const std::vector<std::string>& constraint_ids,
@@ -928,9 +1481,9 @@ int32_t EstimateStage1DegreesOfFreedom(
                                       dimension_ids.empty() ? nullptr : &dimension_scope);
 }
 
-std::vector<cccad::solver::v1::SolverDiagnostic> BuildStage1ResidualDiagnostics(
+std::vector<cccad::solver::v1::SolverDiagnostic> BuildResidualDiagnostics(
     const cccad::solver::v1::SketchModel& proto_model,
-    const Stage1Model& model,
+    const SolverModel& model,
     const cccad::solver::v1::SolverOptions& options) {
   const double tolerance =
       options.tolerance() > 0.0 && IsFinite(options.tolerance()) ? options.tolerance() : kDefaultTolerance;
@@ -986,8 +1539,8 @@ std::vector<cccad::solver::v1::SolverDiagnostic> BuildStage1ResidualDiagnostics(
   return diagnostics;
 }
 
-void WriteStage1Solution(const cccad::solver::v1::SketchModel& proto_model,
-                         const Stage1Model& model,
+void WriteSolverSolution(const cccad::solver::v1::SketchModel& proto_model,
+                         const SolverModel& model,
                          cccad::solver::v1::SketchSolution* solution) {
   solution->Clear();
   std::vector<const cccad::solver::v1::Entity*> entities;

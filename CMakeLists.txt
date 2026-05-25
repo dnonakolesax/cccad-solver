@@ -36,7 +36,7 @@ target_link_libraries(cccad_solver_proto PUBLIC protobuf::libprotobuf gRPC::grpc
 
 add_library(cccad_solver_core STATIC
   src/constraint_graph.cc
-  src/stage1_solver.cc
+  src/constraint_solver.cc
   src/sketch_solver_engine.cc
   src/sketch_solver_service.cc)
 target_include_directories(cccad_solver_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")

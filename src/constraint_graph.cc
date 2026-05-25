@@ -127,6 +127,10 @@ std::vector<std::string> ConstraintGraph::ConstraintEntityIds(
               constraint.midpoint().point_b_id()};
     case cccad::solver::v1::Constraint::kConcentric:
       return {constraint.concentric().circle_a_id(), constraint.concentric().circle_b_id()};
+    case cccad::solver::v1::Constraint::kPointOnLine:
+      return {constraint.point_on_line().point_id(), constraint.point_on_line().line_id()};
+    case cccad::solver::v1::Constraint::kPointOnCircle:
+      return {constraint.point_on_circle().point_id(), constraint.point_on_circle().circle_id()};
     case cccad::solver::v1::Constraint::KIND_NOT_SET:
       return {};
   }
