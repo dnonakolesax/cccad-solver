@@ -1,0 +1,22 @@
+services:
+  cccad-solver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cccad-solver:latest
+    environment:
+      SOLVER_GRPC_ADDR: 0.0.0.0:50051
+      SOLVER_MAX_ENTITIES: 10000
+      SOLVER_MAX_CONSTRAINTS: 20000
+      SOLVER_MAX_ITERATIONS: 100
+      SOLVER_MAX_REQUEST_BYTES: 16777216
+    ports:
+      - "50051:50051"
+    networks:
+      - sknet
+    restart: unless-stopped
+
+networks:
+  sknet:
+    external: true
+    name: cad-sketcher_sknet
