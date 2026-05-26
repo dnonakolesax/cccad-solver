@@ -1411,6 +1411,117 @@ void ApplyIntentSolvesOnlyAffectedComponent() {
           "scoped apply intent should leave disconnected dimensions unsolved");
 }
 
+void AddConstraintIntentValidationsAreRejected() {
+  auto add_base_entities = [](ApplyIntentRequest* request) {
+    auto* a = request->mutable_model()->add_entities();
+    a->set_id("a");
+    a->mutable_point()->set_x(0.0);
+    a->mutable_point()->set_y(0.0);
+
+    auto* b = request->mutable_model()->add_entities();
+    b->set_id("b");
+    b->mutable_point()->set_x(1.0);
+    b->mutable_point()->set_y(1.0);
+
+    auto* line = request->mutable_model()->add_entities();
+    line->set_id("l1");
+    line->mutable_line()->set_start_point_id("a");
+    line->mutable_line()->set_end_point_id("b");
+  };
+
+  {
+    ApplyIntentRequest request;
+    add_base_entities(&request);
+    request.mutable_intent()->mutable_add_constraint()->mutable_constraint()
+        ->mutable_horizontal()
+        ->set_line_id("l1");
+
+    ApplyIntentResponse response;
+    SketchSolverEngine{}.ApplyIntent(request, &response);
+
+    Require(response.status() == SOLVE_STATUS_INCONSISTENT,
+            "add constraint intent with empty id should be rejected");
+    Require(response.diagnostics_size() == 1,
+            "add constraint intent with empty id should produce one diagnostic");
+    Require(response.diagnostics(0).code() == "invalid_intent",
+            "empty add constraint id diagnostic should use a stable code");
+  }
+
+  {
+    ApplyIntentRequest request;
+    add_base_entities(&request);
+    auto* existing = request.mutable_model()->add_constraints();
+    existing->set_id("c1");
+    existing->mutable_fixed()->set_entity_id("a");
+
+    auto* added = request.mutable_intent()->mutable_add_constraint()->mutable_constraint();
+    added->set_id("c1");
+    added->mutable_horizontal()->set_line_id("l1");
+
+    ApplyIntentResponse response;
+    SketchSolverEngine{}.ApplyIntent(request, &response);
+
+    Require(response.status() == SOLVE_STATUS_INCONSISTENT,
+            "add constraint intent with duplicate id should be rejected");
+    Require(response.diagnostics_size() == 1,
+            "add constraint intent with duplicate id should produce one diagnostic");
+    Require(response.diagnostics(0).code() == "invalid_intent",
+            "duplicate add constraint id diagnostic should use a stable code");
+  }
+
+  {
+    ApplyIntentRequest request;
+    add_base_entities(&request);
+    auto* added = request.mutable_intent()->mutable_add_constraint()->mutable_constraint();
+    added->set_id("c_new");
+    added->mutable_horizontal()->set_line_id("missing");
+
+    ApplyIntentResponse response;
+    SketchSolverEngine{}.ApplyIntent(request, &response);
+
+    Require(response.status() == SOLVE_STATUS_INCONSISTENT,
+            "add constraint intent with missing reference should be rejected");
+    Require(response.diagnostics_size() == 1,
+            "add constraint intent with missing reference should produce one diagnostic");
+    Require(response.diagnostics(0).code() == "invalid_intent_reference",
+            "missing add constraint reference diagnostic should use a stable code");
+  }
+
+  {
+    ApplyIntentRequest request;
+    add_base_entities(&request);
+    auto* added = request.mutable_intent()->mutable_add_constraint()->mutable_constraint();
+    added->set_id("c_new");
+    added->mutable_horizontal()->set_line_id("a");
+
+    ApplyIntentResponse response;
+    SketchSolverEngine{}.ApplyIntent(request, &response);
+
+    Require(response.status() == SOLVE_STATUS_INCONSISTENT,
+            "add constraint intent with wrong reference type should be rejected");
+    Require(response.diagnostics_size() == 1,
+            "add constraint intent with wrong reference type should produce one diagnostic");
+    Require(response.diagnostics(0).code() == "invalid_intent_reference",
+            "wrong add constraint reference type diagnostic should use a stable code");
+  }
+
+  {
+    ApplyIntentRequest request;
+    add_base_entities(&request);
+    request.mutable_intent()->mutable_add_constraint()->mutable_constraint()->set_id("c_new");
+
+    ApplyIntentResponse response;
+    SketchSolverEngine{}.ApplyIntent(request, &response);
+
+    Require(response.status() == SOLVE_STATUS_INCONSISTENT,
+            "add constraint intent with unset kind should be rejected");
+    Require(response.diagnostics_size() == 1,
+            "add constraint intent with unset kind should produce one diagnostic");
+    Require(response.diagnostics(0).code() == "unsupported_constraint",
+            "unset add constraint kind diagnostic should use a stable code");
+  }
+}
+
 void RedundantConstraintsUseJacobianRankForDof() {
   CheckRequest request;
   auto* a = request.mutable_model()->add_entities();
@@ -1519,6 +1630,7 @@ int main() {
   AnalyzeReturnsRealComponents();
   ApplyIntentReportsAffectedComponentOnly();
   ApplyIntentSolvesOnlyAffectedComponent();
+  AddConstraintIntentValidationsAreRejected();
   RedundantConstraintsUseJacobianRankForDof();
   UnsatisfiedDimensionReturnsResidualDiagnostic();
   return 0;

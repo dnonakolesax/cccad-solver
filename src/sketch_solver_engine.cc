@@ -709,15 +709,60 @@ void SketchSolverEngine::ValidateIntent(const cccad::solver::v1::UserIntent& int
                                         const cccad::solver::v1::SketchModel& model,
                                         ValidationResult* result) const {
   std::unordered_set<std::string> entity_ids;
+  std::unordered_map<std::string, cccad::solver::v1::Entity::KindCase> entity_kinds;
+  std::unordered_set<std::string> constraint_ids;
   std::unordered_set<std::string> dimension_ids;
   entity_ids.reserve(static_cast<std::size_t>(model.entities_size()));
+  entity_kinds.reserve(static_cast<std::size_t>(model.entities_size()));
+  constraint_ids.reserve(static_cast<std::size_t>(model.constraints_size()));
   dimension_ids.reserve(static_cast<std::size_t>(model.dimensions_size()));
   for (const auto& entity : model.entities()) {
     entity_ids.insert(entity.id());
+    entity_kinds.emplace(entity.id(), entity.kind_case());
+  }
+  for (const auto& constraint : model.constraints()) {
+    constraint_ids.insert(constraint.id());
   }
   for (const auto& dimension : model.dimensions()) {
     dimension_ids.insert(dimension.id());
   }
+
+  auto require_constraint_reference_kind =
+      [&](const std::string& entity_id, cccad::solver::v1::Entity::KindCase expected_kind,
+          std::string_view message, const std::string& constraint_id) {
+        const auto kind_it = entity_kinds.find(entity_id);
+        if (kind_it == entity_kinds.end()) {
+          return;
+        }
+        if (kind_it->second != expected_kind) {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent_reference",
+                           message, {entity_id}, {constraint_id}, {}, result);
+        }
+      };
+  auto require_constraint_reference_round =
+      [&](const std::string& entity_id, std::string_view message,
+          const std::string& constraint_id) {
+        const auto kind_it = entity_kinds.find(entity_id);
+        if (kind_it == entity_kinds.end()) {
+          return;
+        }
+        if (kind_it->second != cccad::solver::v1::Entity::kCircle &&
+            kind_it->second != cccad::solver::v1::Entity::kArc) {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent_reference",
+                           message, {entity_id}, {constraint_id}, {}, result);
+        }
+      };
+  auto is_line = [&](const std::string& entity_id) {
+    const auto kind_it = entity_kinds.find(entity_id);
+    return kind_it != entity_kinds.end() &&
+           kind_it->second == cccad::solver::v1::Entity::kLine;
+  };
+  auto is_round = [&](const std::string& entity_id) {
+    const auto kind_it = entity_kinds.find(entity_id);
+    return kind_it != entity_kinds.end() &&
+           (kind_it->second == cccad::solver::v1::Entity::kCircle ||
+            kind_it->second == cccad::solver::v1::Entity::kArc);
+  };
 
   switch (intent.kind_case()) {
     case cccad::solver::v1::UserIntent::kMovePoint:
@@ -755,7 +800,189 @@ void SketchSolverEngine::ValidateIntent(const cccad::solver::v1::UserIntent& int
                          "set dimension value must be finite", {}, {}, {}, result);
       }
       break;
-    case cccad::solver::v1::UserIntent::kAddConstraint:
+    case cccad::solver::v1::UserIntent::kAddConstraint: {
+      const auto& constraint = intent.add_constraint().constraint();
+      if (constraint.id().empty()) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "add constraint intent id must not be empty", {}, {}, {}, result);
+      } else if (Contains(constraint_ids, constraint.id())) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "add constraint intent id must not already exist", {}, {constraint.id()},
+                         {}, result);
+      }
+
+      if (constraint.kind_case() == cccad::solver::v1::Constraint::KIND_NOT_SET) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "unsupported_constraint",
+                         "add constraint intent kind must be set", {}, {constraint.id()}, {},
+                         result);
+        break;
+      }
+
+      std::vector<std::string> references;
+      switch (constraint.kind_case()) {
+        case cccad::solver::v1::Constraint::kCoincident:
+          references = {constraint.coincident().point_a_id(),
+                        constraint.coincident().point_b_id()};
+          require_constraint_reference_kind(
+              constraint.coincident().point_a_id(), cccad::solver::v1::Entity::kPoint,
+              "coincident add constraint intent references must be point entities",
+              constraint.id());
+          require_constraint_reference_kind(
+              constraint.coincident().point_b_id(), cccad::solver::v1::Entity::kPoint,
+              "coincident add constraint intent references must be point entities",
+              constraint.id());
+          break;
+        case cccad::solver::v1::Constraint::kHorizontal:
+          references = {constraint.horizontal().line_id()};
+          require_constraint_reference_kind(
+              constraint.horizontal().line_id(), cccad::solver::v1::Entity::kLine,
+              "horizontal add constraint intent reference must be a line entity",
+              constraint.id());
+          break;
+        case cccad::solver::v1::Constraint::kVertical:
+          references = {constraint.vertical().line_id()};
+          require_constraint_reference_kind(
+              constraint.vertical().line_id(), cccad::solver::v1::Entity::kLine,
+              "vertical add constraint intent reference must be a line entity",
+              constraint.id());
+          break;
+        case cccad::solver::v1::Constraint::kParallel:
+          references = {constraint.parallel().line_a_id(), constraint.parallel().line_b_id()};
+          require_constraint_reference_kind(
+              constraint.parallel().line_a_id(), cccad::solver::v1::Entity::kLine,
+              "parallel add constraint intent references must be line entities",
+              constraint.id());
+          require_constraint_reference_kind(
+              constraint.parallel().line_b_id(), cccad::solver::v1::Entity::kLine,
+              "parallel add constraint intent references must be line entities",
+              constraint.id());
+          break;
+        case cccad::solver::v1::Constraint::kPerpendicular:
+          references = {constraint.perpendicular().line_a_id(),
+                        constraint.perpendicular().line_b_id()};
+          require_constraint_reference_kind(
+              constraint.perpendicular().line_a_id(), cccad::solver::v1::Entity::kLine,
+              "perpendicular add constraint intent references must be line entities",
+              constraint.id());
+          require_constraint_reference_kind(
+              constraint.perpendicular().line_b_id(), cccad::solver::v1::Entity::kLine,
+              "perpendicular add constraint intent references must be line entities",
+              constraint.id());
+          break;
+        case cccad::solver::v1::Constraint::kTangent:
+          references = {constraint.tangent().entity_a_id(), constraint.tangent().entity_b_id()};
+          if (Contains(entity_ids, constraint.tangent().entity_a_id()) &&
+              Contains(entity_ids, constraint.tangent().entity_b_id())) {
+            const bool supported_line_round =
+                (is_line(constraint.tangent().entity_a_id()) &&
+                 is_round(constraint.tangent().entity_b_id())) ||
+                (is_round(constraint.tangent().entity_a_id()) &&
+                 is_line(constraint.tangent().entity_b_id()));
+            const bool supported_round_round =
+                is_round(constraint.tangent().entity_a_id()) &&
+                is_round(constraint.tangent().entity_b_id());
+            if (!supported_line_round && !supported_round_round) {
+              AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent_reference",
+                               "tangent add constraint intent references must be line-circle or circle-circle compatible entities",
+                               {constraint.tangent().entity_a_id(),
+                                constraint.tangent().entity_b_id()},
+                               {constraint.id()}, {}, result);
+            }
+          }
+          break;
+        case cccad::solver::v1::Constraint::kEqual:
+          references = {constraint.equal().entity_a_id(), constraint.equal().entity_b_id()};
+          if (constraint.equal().kind() == cccad::solver::v1::EQUAL_KIND_UNSPECIFIED) {
+            AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                             "equal add constraint intent kind must be length or radius", {},
+                             {constraint.id()}, {}, result);
+          } else if (constraint.equal().kind() == cccad::solver::v1::EQUAL_KIND_LENGTH) {
+            require_constraint_reference_kind(
+                constraint.equal().entity_a_id(), cccad::solver::v1::Entity::kLine,
+                "equal length add constraint intent references must be line entities",
+                constraint.id());
+            require_constraint_reference_kind(
+                constraint.equal().entity_b_id(), cccad::solver::v1::Entity::kLine,
+                "equal length add constraint intent references must be line entities",
+                constraint.id());
+          } else if (constraint.equal().kind() == cccad::solver::v1::EQUAL_KIND_RADIUS) {
+            require_constraint_reference_round(
+                constraint.equal().entity_a_id(),
+                "equal radius add constraint intent references must be circle or arc entities",
+                constraint.id());
+            require_constraint_reference_round(
+                constraint.equal().entity_b_id(),
+                "equal radius add constraint intent references must be circle or arc entities",
+                constraint.id());
+          }
+          break;
+        case cccad::solver::v1::Constraint::kFixed:
+          references = {constraint.fixed().entity_id()};
+          break;
+        case cccad::solver::v1::Constraint::kMidpoint:
+          references = {constraint.midpoint().midpoint_id(), constraint.midpoint().point_a_id(),
+                        constraint.midpoint().point_b_id()};
+          require_constraint_reference_kind(
+              constraint.midpoint().midpoint_id(), cccad::solver::v1::Entity::kPoint,
+              "midpoint add constraint intent references must be point entities",
+              constraint.id());
+          require_constraint_reference_kind(
+              constraint.midpoint().point_a_id(), cccad::solver::v1::Entity::kPoint,
+              "midpoint add constraint intent references must be point entities",
+              constraint.id());
+          require_constraint_reference_kind(
+              constraint.midpoint().point_b_id(), cccad::solver::v1::Entity::kPoint,
+              "midpoint add constraint intent references must be point entities",
+              constraint.id());
+          break;
+        case cccad::solver::v1::Constraint::kConcentric:
+          references = {constraint.concentric().circle_a_id(),
+                        constraint.concentric().circle_b_id()};
+          require_constraint_reference_round(
+              constraint.concentric().circle_a_id(),
+              "concentric add constraint intent references must be circle or arc entities",
+              constraint.id());
+          require_constraint_reference_round(
+              constraint.concentric().circle_b_id(),
+              "concentric add constraint intent references must be circle or arc entities",
+              constraint.id());
+          break;
+        case cccad::solver::v1::Constraint::kPointOnLine:
+          references = {constraint.point_on_line().point_id(),
+                        constraint.point_on_line().line_id()};
+          require_constraint_reference_kind(
+              constraint.point_on_line().point_id(), cccad::solver::v1::Entity::kPoint,
+              "point-on-line add constraint intent point reference must be a point entity",
+              constraint.id());
+          require_constraint_reference_kind(
+              constraint.point_on_line().line_id(), cccad::solver::v1::Entity::kLine,
+              "point-on-line add constraint intent line reference must be a line entity",
+              constraint.id());
+          break;
+        case cccad::solver::v1::Constraint::kPointOnCircle:
+          references = {constraint.point_on_circle().point_id(),
+                        constraint.point_on_circle().circle_id()};
+          require_constraint_reference_kind(
+              constraint.point_on_circle().point_id(), cccad::solver::v1::Entity::kPoint,
+              "point-on-circle add constraint intent point reference must be a point entity",
+              constraint.id());
+          require_constraint_reference_kind(
+              constraint.point_on_circle().circle_id(), cccad::solver::v1::Entity::kCircle,
+              "point-on-circle add constraint intent circle reference must be a circle entity",
+              constraint.id());
+          break;
+        case cccad::solver::v1::Constraint::KIND_NOT_SET:
+          break;
+      }
+      for (const auto& reference : references) {
+        if (!Contains(entity_ids, reference)) {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent_reference",
+                           "add constraint intent references must point to existing entities",
+                           {reference}, {constraint.id()}, {}, result);
+        }
+      }
+      break;
+    }
     case cccad::solver::v1::UserIntent::KIND_NOT_SET:
       break;
   }
