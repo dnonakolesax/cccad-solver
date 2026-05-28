@@ -127,10 +127,6 @@ std::vector<std::string> ConstraintGraph::ConstraintEntityIds(
               constraint.midpoint().point_b_id()};
     case cccad::solver::v1::Constraint::kConcentric:
       return {constraint.concentric().circle_a_id(), constraint.concentric().circle_b_id()};
-    case cccad::solver::v1::Constraint::kPointOnLine:
-      return {constraint.point_on_line().point_id(), constraint.point_on_line().line_id()};
-    case cccad::solver::v1::Constraint::kPointOnCircle:
-      return {constraint.point_on_circle().point_id(), constraint.point_on_circle().circle_id()};
     case cccad::solver::v1::Constraint::KIND_NOT_SET:
       return {};
   }
@@ -288,6 +284,14 @@ ConstraintGraphSeed ConstraintGraph::SeedForIntent(const cccad::solver::v1::User
       return {.dimension_ids = {intent.set_dimension().dimension_id()}};
     case cccad::solver::v1::UserIntent::kAddConstraint:
       return SeedForConstraint(intent.add_constraint().constraint());
+    case cccad::solver::v1::UserIntent::kApplyFillet:
+      return {.entity_ids = {intent.apply_fillet().line1_id(),
+                             intent.apply_fillet().line2_id(),
+                             intent.apply_fillet().corner_point_id()}};
+    case cccad::solver::v1::UserIntent::kApplyChamfer:
+      return {.entity_ids = {intent.apply_chamfer().line1_id(),
+                             intent.apply_chamfer().line2_id(),
+                             intent.apply_chamfer().corner_point_id()}};
     case cccad::solver::v1::UserIntent::KIND_NOT_SET:
       return {};
   }

@@ -808,89 +808,6 @@ void ArcArcEqualRadiusConstraintIsSolved() {
           "arc-arc equal radius should solve end radius through arc consistency");
 }
 
-void PointOnLineConstraintIsSolved() {
-  SolveRequest request;
-  auto* a = request.mutable_model()->add_entities();
-  a->set_id("a");
-  a->mutable_point()->set_x(0.0);
-  a->mutable_point()->set_y(0.0);
-  a->mutable_point()->set_fixed(true);
-  auto* b = request.mutable_model()->add_entities();
-  b->set_id("b");
-  b->mutable_point()->set_x(10.0);
-  b->mutable_point()->set_y(0.0);
-  b->mutable_point()->set_fixed(true);
-  auto* p = request.mutable_model()->add_entities();
-  p->set_id("p");
-  p->mutable_point()->set_x(4.0);
-  p->mutable_point()->set_y(3.0);
-
-  auto* line = request.mutable_model()->add_entities();
-  line->set_id("line");
-  line->mutable_line()->set_start_point_id("a");
-  line->mutable_line()->set_end_point_id("b");
-
-  auto* constraint = request.mutable_model()->add_constraints();
-  constraint->set_id("point_on_line");
-  constraint->mutable_point_on_line()->set_point_id("p");
-  constraint->mutable_point_on_line()->set_line_id("line");
-
-  SolveResponse response;
-  SketchSolverEngine{}.Solve(request, &response);
-
-  double py = 1000.0;
-  for (const auto& entity : response.solution().entities()) {
-    if (entity.id() == "p") {
-      py = entity.point().y();
-    }
-  }
-  Require(response.status() != SOLVE_STATUS_NUMERICAL_FAILURE,
-          "point-on-line constraint should converge");
-  Require(std::abs(py) < 1e-5, "point-on-line constraint should move point onto line");
-}
-
-void PointOnCircleConstraintIsSolved() {
-  SolveRequest request;
-  auto* center = request.mutable_model()->add_entities();
-  center->set_id("center");
-  center->mutable_point()->set_x(0.0);
-  center->mutable_point()->set_y(0.0);
-  center->mutable_point()->set_fixed(true);
-  auto* p = request.mutable_model()->add_entities();
-  p->set_id("p");
-  p->mutable_point()->set_x(2.0);
-  p->mutable_point()->set_y(0.0);
-
-  auto* circle = request.mutable_model()->add_entities();
-  circle->set_id("circle");
-  circle->mutable_circle()->set_center_point_id("center");
-  circle->mutable_circle()->set_radius(5.0);
-
-  auto* fixed = request.mutable_model()->add_constraints();
-  fixed->set_id("fixed_circle");
-  fixed->mutable_fixed()->set_entity_id("circle");
-  auto* constraint = request.mutable_model()->add_constraints();
-  constraint->set_id("point_on_circle");
-  constraint->mutable_point_on_circle()->set_point_id("p");
-  constraint->mutable_point_on_circle()->set_circle_id("circle");
-
-  SolveResponse response;
-  SketchSolverEngine{}.Solve(request, &response);
-
-  double px = 0.0;
-  double py = 0.0;
-  for (const auto& entity : response.solution().entities()) {
-    if (entity.id() == "p") {
-      px = entity.point().x();
-      py = entity.point().y();
-    }
-  }
-  Require(response.status() != SOLVE_STATUS_NUMERICAL_FAILURE,
-          "point-on-circle constraint should converge");
-  Require(std::abs(std::sqrt(px * px + py * py) - 5.0) < 1e-5,
-          "point-on-circle constraint should move point onto circle");
-}
-
 void ParallelConstraintIsSolved() {
   SolveRequest request;
   auto* a = request.mutable_model()->add_entities();
@@ -1522,6 +1439,84 @@ void AddConstraintIntentValidationsAreRejected() {
   }
 }
 
+void FilletChamferIntentsAreExplicitlyUnsupported() {
+  auto add_corner_entities = [](ApplyIntentRequest* request) {
+    auto* corner = request->mutable_model()->add_entities();
+    corner->set_id("corner");
+    corner->mutable_point()->set_x(0.0);
+    corner->mutable_point()->set_y(0.0);
+
+    auto* a = request->mutable_model()->add_entities();
+    a->set_id("a");
+    a->mutable_point()->set_x(10.0);
+    a->mutable_point()->set_y(0.0);
+
+    auto* b = request->mutable_model()->add_entities();
+    b->set_id("b");
+    b->mutable_point()->set_x(0.0);
+    b->mutable_point()->set_y(10.0);
+
+    auto* l1 = request->mutable_model()->add_entities();
+    l1->set_id("l1");
+    l1->mutable_line()->set_start_point_id("corner");
+    l1->mutable_line()->set_end_point_id("a");
+
+    auto* l2 = request->mutable_model()->add_entities();
+    l2->set_id("l2");
+    l2->mutable_line()->set_start_point_id("corner");
+    l2->mutable_line()->set_end_point_id("b");
+  };
+
+  {
+    ApplyIntentRequest request;
+    add_corner_entities(&request);
+    auto* fillet = request.mutable_intent()->mutable_apply_fillet();
+    fillet->set_feature_id("fillet1");
+    fillet->set_line1_id("l1");
+    fillet->set_line2_id("l2");
+    fillet->set_corner_point_id("corner");
+    fillet->set_created_point1_id("fillet_p1");
+    fillet->set_created_point2_id("fillet_p2");
+    fillet->set_created_arc_id("fillet_arc");
+    fillet->set_radius(1.0);
+
+    ApplyIntentResponse response;
+    SketchSolverEngine{}.ApplyIntent(request, &response);
+
+    Require(response.status() == SOLVE_STATUS_INCONSISTENT,
+            "fillet intent should be rejected until implemented");
+    Require(response.diagnostics_size() == 1,
+            "valid-looking fillet intent should produce one diagnostic");
+    Require(response.diagnostics(0).code() == "unsupported_intent",
+            "fillet unsupported diagnostic should use a stable code");
+  }
+
+  {
+    ApplyIntentRequest request;
+    add_corner_entities(&request);
+    auto* chamfer = request.mutable_intent()->mutable_apply_chamfer();
+    chamfer->set_feature_id("chamfer1");
+    chamfer->set_line1_id("l1");
+    chamfer->set_line2_id("l2");
+    chamfer->set_corner_point_id("corner");
+    chamfer->set_created_point1_id("chamfer_p1");
+    chamfer->set_created_point2_id("chamfer_p2");
+    chamfer->set_created_line_id("chamfer_line");
+    chamfer->set_distance1(1.0);
+    chamfer->set_distance2(2.0);
+
+    ApplyIntentResponse response;
+    SketchSolverEngine{}.ApplyIntent(request, &response);
+
+    Require(response.status() == SOLVE_STATUS_INCONSISTENT,
+            "chamfer intent should be rejected until implemented");
+    Require(response.diagnostics_size() == 1,
+            "valid-looking chamfer intent should produce one diagnostic");
+    Require(response.diagnostics(0).code() == "unsupported_intent",
+            "chamfer unsupported diagnostic should use a stable code");
+  }
+}
+
 void RedundantConstraintsUseJacobianRankForDof() {
   CheckRequest request;
   auto* a = request.mutable_model()->add_entities();
@@ -1616,8 +1611,6 @@ int main() {
   ArcBranchIsPreserved();
   LineArcTangentConstraintIsSolved();
   ArcArcEqualRadiusConstraintIsSolved();
-  PointOnLineConstraintIsSolved();
-  PointOnCircleConstraintIsSolved();
   ParallelConstraintIsSolved();
   PerpendicularConstraintIsSolved();
   MidpointConstraintIsSolved();
@@ -1631,6 +1624,7 @@ int main() {
   ApplyIntentReportsAffectedComponentOnly();
   ApplyIntentSolvesOnlyAffectedComponent();
   AddConstraintIntentValidationsAreRejected();
+  FilletChamferIntentsAreExplicitlyUnsupported();
   RedundantConstraintsUseJacobianRankForDof();
   UnsatisfiedDimensionReturnsResidualDiagnostic();
   return 0;

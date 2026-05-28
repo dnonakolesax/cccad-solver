@@ -230,36 +230,6 @@ std::optional<double> TangentResidual(const SolverModel& model,
   return std::nullopt;
 }
 
-std::optional<double> PointOnLineResidual(const SolverModel& model,
-                                          const std::string& point_id,
-                                          const std::string& line_id) {
-  const auto point_it = model.points.find(point_id);
-  const auto line = GetLineGeometry(model, line_id);
-  if (point_it == model.points.end() || !line.has_value() || line->length < kMinimumRadius) {
-    return std::nullopt;
-  }
-  const double cross = line->dx * (point_it->second.y - line->start->y) -
-                       line->dy * (point_it->second.x - line->start->x);
-  return cross / line->length;
-}
-
-std::optional<double> PointOnCircleResidual(const SolverModel& model,
-                                            const std::string& point_id,
-                                            const std::string& circle_id) {
-  const auto point_it = model.points.find(point_id);
-  const auto circle_it = model.circles.find(circle_id);
-  if (point_it == model.points.end() || circle_it == model.circles.end()) {
-    return std::nullopt;
-  }
-  const auto center_it = model.points.find(circle_it->second.center_point_id);
-  if (center_it == model.points.end()) {
-    return std::nullopt;
-  }
-  return Distance(point_it->second.x, point_it->second.y, center_it->second.x,
-                  center_it->second.y) -
-         circle_it->second.radius;
-}
-
 std::optional<double> ArcRadiusConsistencyResidual(const SolverModel& model,
                                                    const SolverArc& arc) {
   const auto center_it = model.points.find(arc.center_point_id);
@@ -615,35 +585,6 @@ void AddDiagnosticResiduals(const cccad::solver::v1::Constraint& constraint,
                         .constraint_ids = {constraint.id()}});
       break;
     }
-    case cccad::solver::v1::Constraint::kPointOnLine: {
-      const auto residual = PointOnLineResidual(model, constraint.point_on_line().point_id(),
-                                                constraint.point_on_line().line_id());
-      if (!residual.has_value()) {
-        return;
-      }
-      AddResidualEntry(residuals, *residual,
-                       {.code = "constraint_residual",
-                        .message = "point-on-line constraint residual is above tolerance",
-                        .entity_ids = {constraint.point_on_line().point_id(),
-                                       constraint.point_on_line().line_id()},
-                        .constraint_ids = {constraint.id()}});
-      break;
-    }
-    case cccad::solver::v1::Constraint::kPointOnCircle: {
-      const auto residual =
-          PointOnCircleResidual(model, constraint.point_on_circle().point_id(),
-                                constraint.point_on_circle().circle_id());
-      if (!residual.has_value()) {
-        return;
-      }
-      AddResidualEntry(residuals, *residual,
-                       {.code = "constraint_residual",
-                        .message = "point-on-circle constraint residual is above tolerance",
-                        .entity_ids = {constraint.point_on_circle().point_id(),
-                                       constraint.point_on_circle().circle_id()},
-                        .constraint_ids = {constraint.id()}});
-      break;
-    }
     case cccad::solver::v1::Constraint::kFixed:
     case cccad::solver::v1::Constraint::KIND_NOT_SET:
       break;
@@ -859,23 +800,6 @@ void AddConstraintResiduals(const cccad::solver::v1::Constraint& constraint,
     }
     case cccad::solver::v1::Constraint::kTangent: {
       const auto residual = TangentResidual(model, constraint.tangent());
-      if (residual.has_value()) {
-        AddScaledResidual(residuals, *residual);
-      }
-      break;
-    }
-    case cccad::solver::v1::Constraint::kPointOnLine: {
-      const auto residual = PointOnLineResidual(model, constraint.point_on_line().point_id(),
-                                                constraint.point_on_line().line_id());
-      if (residual.has_value()) {
-        AddScaledResidual(residuals, *residual);
-      }
-      break;
-    }
-    case cccad::solver::v1::Constraint::kPointOnCircle: {
-      const auto residual =
-          PointOnCircleResidual(model, constraint.point_on_circle().point_id(),
-                                constraint.point_on_circle().circle_id());
       if (residual.has_value()) {
         AddScaledResidual(residuals, *residual);
       }

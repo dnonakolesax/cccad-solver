@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package cccad.solver.v1;
 
-option go_package = "github.com/cccad/cccad/proto/solver/v1;solverv1";
+option go_package = "github.com/dnonakolesax/cccad-locks/internal/proto/solver/v1;solverv1";
 
 // SketchSolver is a pure computational service.
 // It must not know anything about users, workspaces, Keycloak, permissions,
@@ -129,8 +129,6 @@ message Constraint {
     FixedConstraint fixed = 17;
     MidpointConstraint midpoint = 18;
     ConcentricConstraint concentric = 19;
-    PointOnLineConstraint point_on_line = 20;
-    PointOnCircleConstraint point_on_circle = 21;
   }
 }
 
@@ -184,16 +182,6 @@ message ConcentricConstraint {
   string circle_b_id = 2;
 }
 
-message PointOnLineConstraint {
-  string point_id = 1;
-  string line_id = 2;
-}
-
-message PointOnCircleConstraint {
-  string point_id = 1;
-  string circle_id = 2;
-}
-
 message Dimension {
   string id = 1;
   bool driving = 2;
@@ -243,6 +231,8 @@ message UserIntent {
     MoveEntityIntent move_entity = 2;
     SetDimensionIntent set_dimension = 3;
     AddConstraintIntent add_constraint = 4;
+    ApplyFilletIntent apply_fillet = 5;
+    ApplyChamferIntent apply_chamfer = 6;
   }
 }
 
@@ -267,6 +257,32 @@ message AddConstraintIntent {
   Constraint constraint = 1;
 }
 
+message ApplyFilletIntent {
+  string feature_id = 1;
+  string line1_id = 2;
+  string line2_id = 3;
+  string corner_point_id = 4;
+  string created_point1_id = 5;
+  string created_point2_id = 6;
+  string created_arc_id = 7;
+  double radius = 8;
+  bool trim = 9;
+  bool clockwise = 10;
+}
+
+message ApplyChamferIntent {
+  string feature_id = 1;
+  string line1_id = 2;
+  string line2_id = 3;
+  string corner_point_id = 4;
+  string created_point1_id = 5;
+  string created_point2_id = 6;
+  string created_line_id = 7;
+  double distance1 = 8;
+  double distance2 = 9;
+  bool trim = 10;
+}
+
 message SketchSolution {
   repeated SolvedEntity entities = 1;
 }
@@ -278,7 +294,6 @@ message SolvedEntity {
     SolvedPoint point = 10;
     SolvedCircle circle = 11;
     SolvedArc arc = 12;
-    // Added after point/circle/arc to preserve existing wire numbers.
     SolvedLine line = 13;
   }
 }
@@ -288,14 +303,14 @@ message SolvedPoint {
   double y = 2;
 }
 
-message SolvedCircle {
-  string center_point_id = 1;
-  double radius = 2;
-}
-
 message SolvedLine {
   string start_point_id = 1;
   string end_point_id = 2;
+}
+
+message SolvedCircle {
+  string center_point_id = 1;
+  double radius = 2;
 }
 
 message SolvedArc {

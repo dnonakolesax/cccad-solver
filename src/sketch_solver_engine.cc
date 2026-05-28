@@ -180,6 +180,9 @@ void SketchSolverEngine::ApplyIntent(
     case cccad::solver::v1::UserIntent::kAddConstraint:
       solver_model.extra_constraints.push_back(&request.intent().add_constraint().constraint());
       break;
+    case cccad::solver::v1::UserIntent::kApplyFillet:
+    case cccad::solver::v1::UserIntent::kApplyChamfer:
+      break;
     case cccad::solver::v1::UserIntent::KIND_NOT_SET:
       break;
   }
@@ -519,30 +522,6 @@ SketchSolverEngine::ValidationResult SketchSolverEngine::ValidateModel(
             constraint.concentric().circle_b_id(),
             "concentric constraint references must be circle or arc entities", constraint.id());
         break;
-      case cccad::solver::v1::Constraint::kPointOnLine:
-        references = {constraint.point_on_line().point_id(),
-                      constraint.point_on_line().line_id()};
-        require_constraint_reference_kind(
-            constraint.point_on_line().point_id(), cccad::solver::v1::Entity::kPoint,
-            "point-on-line constraint point reference must be a point entity",
-            constraint.id());
-        require_constraint_reference_kind(
-            constraint.point_on_line().line_id(), cccad::solver::v1::Entity::kLine,
-            "point-on-line constraint line reference must be a line entity",
-            constraint.id());
-        break;
-      case cccad::solver::v1::Constraint::kPointOnCircle:
-        references = {constraint.point_on_circle().point_id(),
-                      constraint.point_on_circle().circle_id()};
-        require_constraint_reference_kind(
-            constraint.point_on_circle().point_id(), cccad::solver::v1::Entity::kPoint,
-            "point-on-circle constraint point reference must be a point entity",
-            constraint.id());
-        require_constraint_reference_kind(
-            constraint.point_on_circle().circle_id(), cccad::solver::v1::Entity::kCircle,
-            "point-on-circle constraint circle reference must be a circle entity",
-            constraint.id());
-        break;
       case cccad::solver::v1::Constraint::KIND_NOT_SET:
         break;
     }
@@ -763,6 +742,13 @@ void SketchSolverEngine::ValidateIntent(const cccad::solver::v1::UserIntent& int
            (kind_it->second == cccad::solver::v1::Entity::kCircle ||
             kind_it->second == cccad::solver::v1::Entity::kArc);
   };
+  auto require_new_entity_id =
+      [&](const std::string& entity_id, std::string_view message) {
+        if (entity_id.empty() || Contains(entity_ids, entity_id)) {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                           message, {entity_id}, {}, {}, result);
+        }
+      };
 
   switch (intent.kind_case()) {
     case cccad::solver::v1::UserIntent::kMovePoint:
@@ -947,30 +933,6 @@ void SketchSolverEngine::ValidateIntent(const cccad::solver::v1::UserIntent& int
               "concentric add constraint intent references must be circle or arc entities",
               constraint.id());
           break;
-        case cccad::solver::v1::Constraint::kPointOnLine:
-          references = {constraint.point_on_line().point_id(),
-                        constraint.point_on_line().line_id()};
-          require_constraint_reference_kind(
-              constraint.point_on_line().point_id(), cccad::solver::v1::Entity::kPoint,
-              "point-on-line add constraint intent point reference must be a point entity",
-              constraint.id());
-          require_constraint_reference_kind(
-              constraint.point_on_line().line_id(), cccad::solver::v1::Entity::kLine,
-              "point-on-line add constraint intent line reference must be a line entity",
-              constraint.id());
-          break;
-        case cccad::solver::v1::Constraint::kPointOnCircle:
-          references = {constraint.point_on_circle().point_id(),
-                        constraint.point_on_circle().circle_id()};
-          require_constraint_reference_kind(
-              constraint.point_on_circle().point_id(), cccad::solver::v1::Entity::kPoint,
-              "point-on-circle add constraint intent point reference must be a point entity",
-              constraint.id());
-          require_constraint_reference_kind(
-              constraint.point_on_circle().circle_id(), cccad::solver::v1::Entity::kCircle,
-              "point-on-circle add constraint intent circle reference must be a circle entity",
-              constraint.id());
-          break;
         case cccad::solver::v1::Constraint::KIND_NOT_SET:
           break;
       }
@@ -981,6 +943,86 @@ void SketchSolverEngine::ValidateIntent(const cccad::solver::v1::UserIntent& int
                            {reference}, {constraint.id()}, {}, result);
         }
       }
+      break;
+    }
+    case cccad::solver::v1::UserIntent::kApplyFillet: {
+      const auto& fillet = intent.apply_fillet();
+      std::vector<std::string> references = {fillet.line1_id(), fillet.line2_id(),
+                                             fillet.corner_point_id()};
+      require_constraint_reference_kind(
+          fillet.line1_id(), cccad::solver::v1::Entity::kLine,
+          "fillet intent line references must be line entities", fillet.feature_id());
+      require_constraint_reference_kind(
+          fillet.line2_id(), cccad::solver::v1::Entity::kLine,
+          "fillet intent line references must be line entities", fillet.feature_id());
+      require_constraint_reference_kind(
+          fillet.corner_point_id(), cccad::solver::v1::Entity::kPoint,
+          "fillet intent corner reference must be a point entity", fillet.feature_id());
+      for (const auto& reference : references) {
+        if (!Contains(entity_ids, reference)) {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent_reference",
+                           "fillet intent references must point to existing entities",
+                           {reference}, {}, {}, result);
+        }
+      }
+      if (fillet.feature_id().empty()) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "fillet intent feature id must not be empty", {}, {}, {}, result);
+      }
+      require_new_entity_id(fillet.created_point1_id(),
+                            "fillet intent created point ids must be new entity ids");
+      require_new_entity_id(fillet.created_point2_id(),
+                            "fillet intent created point ids must be new entity ids");
+      require_new_entity_id(fillet.created_arc_id(),
+                            "fillet intent created arc id must be a new entity id");
+      if (!IsFinite(fillet.radius()) || fillet.radius() <= 0.0) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "fillet intent radius must be finite and positive", {}, {}, {}, result);
+      }
+      AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "unsupported_intent",
+                       "fillet intent is not implemented by the solver yet", {}, {}, {},
+                       result);
+      break;
+    }
+    case cccad::solver::v1::UserIntent::kApplyChamfer: {
+      const auto& chamfer = intent.apply_chamfer();
+      std::vector<std::string> references = {chamfer.line1_id(), chamfer.line2_id(),
+                                             chamfer.corner_point_id()};
+      require_constraint_reference_kind(
+          chamfer.line1_id(), cccad::solver::v1::Entity::kLine,
+          "chamfer intent line references must be line entities", chamfer.feature_id());
+      require_constraint_reference_kind(
+          chamfer.line2_id(), cccad::solver::v1::Entity::kLine,
+          "chamfer intent line references must be line entities", chamfer.feature_id());
+      require_constraint_reference_kind(
+          chamfer.corner_point_id(), cccad::solver::v1::Entity::kPoint,
+          "chamfer intent corner reference must be a point entity", chamfer.feature_id());
+      for (const auto& reference : references) {
+        if (!Contains(entity_ids, reference)) {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent_reference",
+                           "chamfer intent references must point to existing entities",
+                           {reference}, {}, {}, result);
+        }
+      }
+      if (chamfer.feature_id().empty()) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "chamfer intent feature id must not be empty", {}, {}, {}, result);
+      }
+      require_new_entity_id(chamfer.created_point1_id(),
+                            "chamfer intent created point ids must be new entity ids");
+      require_new_entity_id(chamfer.created_point2_id(),
+                            "chamfer intent created point ids must be new entity ids");
+      require_new_entity_id(chamfer.created_line_id(),
+                            "chamfer intent created line id must be a new entity id");
+      if (!IsFinite(chamfer.distance1()) || chamfer.distance1() <= 0.0 ||
+          !IsFinite(chamfer.distance2()) || chamfer.distance2() <= 0.0) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "chamfer intent distances must be finite and positive", {}, {}, {},
+                         result);
+      }
+      AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "unsupported_intent",
+                       "chamfer intent is not implemented by the solver yet", {}, {}, {},
+                       result);
       break;
     }
     case cccad::solver::v1::UserIntent::KIND_NOT_SET:
