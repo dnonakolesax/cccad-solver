@@ -1439,7 +1439,7 @@ void AddConstraintIntentValidationsAreRejected() {
   }
 }
 
-void FilletChamferIntentsAreExplicitlyUnsupported() {
+void EditIntentsAreExplicitlyUnsupported() {
   auto add_corner_entities = [](ApplyIntentRequest* request) {
     auto* corner = request->mutable_model()->add_entities();
     corner->set_id("corner");
@@ -1466,6 +1466,16 @@ void FilletChamferIntentsAreExplicitlyUnsupported() {
     l2->mutable_line()->set_start_point_id("corner");
     l2->mutable_line()->set_end_point_id("b");
   };
+  auto require_unsupported = [](const ApplyIntentRequest& request, const char* message) {
+    ApplyIntentResponse response;
+    SketchSolverEngine{}.ApplyIntent(request, &response);
+
+    Require(response.status() == SOLVE_STATUS_INCONSISTENT, message);
+    Require(response.diagnostics_size() == 1,
+            "valid-looking unsupported edit intent should produce one diagnostic");
+    Require(response.diagnostics(0).code() == "unsupported_intent",
+            "unsupported edit intent diagnostic should use a stable code");
+  };
 
   {
     ApplyIntentRequest request;
@@ -1480,15 +1490,7 @@ void FilletChamferIntentsAreExplicitlyUnsupported() {
     fillet->set_created_arc_id("fillet_arc");
     fillet->set_radius(1.0);
 
-    ApplyIntentResponse response;
-    SketchSolverEngine{}.ApplyIntent(request, &response);
-
-    Require(response.status() == SOLVE_STATUS_INCONSISTENT,
-            "fillet intent should be rejected until implemented");
-    Require(response.diagnostics_size() == 1,
-            "valid-looking fillet intent should produce one diagnostic");
-    Require(response.diagnostics(0).code() == "unsupported_intent",
-            "fillet unsupported diagnostic should use a stable code");
+    require_unsupported(request, "fillet intent should be rejected until implemented");
   }
 
   {
@@ -1505,15 +1507,126 @@ void FilletChamferIntentsAreExplicitlyUnsupported() {
     chamfer->set_distance1(1.0);
     chamfer->set_distance2(2.0);
 
-    ApplyIntentResponse response;
-    SketchSolverEngine{}.ApplyIntent(request, &response);
+    require_unsupported(request, "chamfer intent should be rejected until implemented");
+  }
 
-    Require(response.status() == SOLVE_STATUS_INCONSISTENT,
-            "chamfer intent should be rejected until implemented");
-    Require(response.diagnostics_size() == 1,
-            "valid-looking chamfer intent should produce one diagnostic");
-    Require(response.diagnostics(0).code() == "unsupported_intent",
-            "chamfer unsupported diagnostic should use a stable code");
+  {
+    ApplyIntentRequest request;
+    add_corner_entities(&request);
+    auto* fillet = request.mutable_intent()->mutable_update_fillet();
+    fillet->set_feature_id("fillet1");
+    fillet->set_radius(2.0);
+
+    require_unsupported(request, "update fillet intent should be rejected until implemented");
+  }
+
+  {
+    ApplyIntentRequest request;
+    add_corner_entities(&request);
+    auto* chamfer = request.mutable_intent()->mutable_update_chamfer();
+    chamfer->set_feature_id("chamfer1");
+    chamfer->set_distance1(1.0);
+    chamfer->set_distance2(2.0);
+
+    require_unsupported(request, "update chamfer intent should be rejected until implemented");
+  }
+
+  {
+    ApplyIntentRequest request;
+    add_corner_entities(&request);
+    auto* split = request.mutable_intent()->mutable_split_entity();
+    split->set_entity_id("l1");
+    split->mutable_pick_point()->set_x(5.0);
+    split->mutable_pick_point()->set_y(0.0);
+    split->set_created_point_id("split_p");
+    split->add_created_entity_ids("split_l1");
+    split->add_created_entity_ids("split_l2");
+
+    require_unsupported(request, "split entity intent should be rejected until implemented");
+  }
+
+  {
+    ApplyIntentRequest request;
+    add_corner_entities(&request);
+    auto* break_intent = request.mutable_intent()->mutable_break_entity_at_point();
+    break_intent->set_entity_id("l1");
+    break_intent->set_point_id("corner");
+    break_intent->mutable_pick_point()->set_x(0.0);
+    break_intent->mutable_pick_point()->set_y(0.0);
+    break_intent->add_created_entity_ids("break_l1");
+    break_intent->add_created_entity_ids("break_l2");
+
+    require_unsupported(request,
+                        "break entity at point intent should be rejected until implemented");
+  }
+
+  {
+    ApplyIntentRequest request;
+    add_corner_entities(&request);
+    auto* trim = request.mutable_intent()->mutable_trim_entity();
+    trim->set_entity_id("l1");
+    trim->mutable_pick_point()->set_x(8.0);
+    trim->mutable_pick_point()->set_y(0.0);
+    trim->add_boundary_entity_ids("l2");
+
+    require_unsupported(request, "trim entity intent should be rejected until implemented");
+  }
+
+  {
+    ApplyIntentRequest request;
+    add_corner_entities(&request);
+    auto* extend = request.mutable_intent()->mutable_extend_entity();
+    extend->set_entity_id("l1");
+    extend->set_endpoint("end");
+    extend->mutable_target()->set_x(12.0);
+    extend->mutable_target()->set_y(0.0);
+    extend->add_target_entity_ids("l2");
+
+    require_unsupported(request, "extend entity intent should be rejected until implemented");
+  }
+
+  {
+    ApplyIntentRequest request;
+    add_corner_entities(&request);
+    auto* mirror = request.mutable_intent()->mutable_mirror_entities();
+    mirror->set_feature_id("mirror1");
+    mirror->add_source_entity_ids("l1");
+    mirror->set_mirror_line_id("l2");
+    mirror->add_created_entity_ids("mirror_l1");
+
+    require_unsupported(request, "mirror entities intent should be rejected until implemented");
+  }
+
+  {
+    ApplyIntentRequest request;
+    add_corner_entities(&request);
+    auto* pattern = request.mutable_intent()->mutable_linear_pattern();
+    pattern->set_feature_id("linear_pattern1");
+    pattern->add_source_entity_ids("l1");
+    pattern->mutable_direction()->set_x(1.0);
+    pattern->mutable_direction()->set_y(0.0);
+    pattern->set_spacing(2.0);
+    pattern->set_count(3);
+    pattern->add_created_entity_ids("linear_l1_copy1");
+    pattern->add_created_entity_ids("linear_l1_copy2");
+
+    require_unsupported(request, "linear pattern intent should be rejected until implemented");
+  }
+
+  {
+    ApplyIntentRequest request;
+    add_corner_entities(&request);
+    auto* pattern = request.mutable_intent()->mutable_circular_pattern();
+    pattern->set_feature_id("circular_pattern1");
+    pattern->add_source_entity_ids("l1");
+    pattern->set_center_point_id("corner");
+    pattern->set_total_angle_rad(3.14159265358979323846);
+    pattern->set_count(4);
+    pattern->add_created_entity_ids("circular_l1_copy1");
+    pattern->add_created_entity_ids("circular_l1_copy2");
+    pattern->add_created_entity_ids("circular_l1_copy3");
+
+    require_unsupported(request, "circular pattern intent should be rejected until implemented");
   }
 }
 
@@ -1624,7 +1737,7 @@ int main() {
   ApplyIntentReportsAffectedComponentOnly();
   ApplyIntentSolvesOnlyAffectedComponent();
   AddConstraintIntentValidationsAreRejected();
-  FilletChamferIntentsAreExplicitlyUnsupported();
+  EditIntentsAreExplicitlyUnsupported();
   RedundantConstraintsUseJacobianRankForDof();
   UnsatisfiedDimensionReturnsResidualDiagnostic();
   return 0;

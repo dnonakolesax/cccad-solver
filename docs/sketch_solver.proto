@@ -233,6 +233,15 @@ message UserIntent {
     AddConstraintIntent add_constraint = 4;
     ApplyFilletIntent apply_fillet = 5;
     ApplyChamferIntent apply_chamfer = 6;
+    UpdateFilletIntent update_fillet = 7;
+    UpdateChamferIntent update_chamfer = 8;
+    SplitEntityIntent split_entity = 9;
+    BreakEntityAtPointIntent break_entity_at_point = 10;
+    TrimEntityIntent trim_entity = 11;
+    ExtendEntityIntent extend_entity = 12;
+    MirrorEntitiesIntent mirror_entities = 13;
+    LinearPatternIntent linear_pattern = 14;
+    CircularPatternIntent circular_pattern = 15;
   }
 }
 
@@ -281,6 +290,77 @@ message ApplyChamferIntent {
   double distance1 = 8;
   double distance2 = 9;
   bool trim = 10;
+}
+
+message UpdateFilletIntent {
+  string feature_id = 1;
+  double radius = 2;
+  bool trim = 3;
+  bool clockwise = 4;
+}
+
+message UpdateChamferIntent {
+  string feature_id = 1;
+  double distance1 = 2;
+  double distance2 = 3;
+  bool trim = 4;
+}
+
+message SplitEntityIntent {
+  string entity_id = 1;
+  Vec2 pick_point = 2;
+  string created_point_id = 3;
+  repeated string created_entity_ids = 4;
+}
+
+message BreakEntityAtPointIntent {
+  string entity_id = 1;
+  string point_id = 2;
+  Vec2 pick_point = 3;
+  repeated string created_entity_ids = 4;
+}
+
+message TrimEntityIntent {
+  string entity_id = 1;
+  Vec2 pick_point = 2;
+  repeated string boundary_entity_ids = 3;
+}
+
+message ExtendEntityIntent {
+  string entity_id = 1;
+  string endpoint = 2;
+  Vec2 target = 3;
+  repeated string target_entity_ids = 4;
+}
+
+message MirrorEntitiesIntent {
+  string feature_id = 1;
+  repeated string source_entity_ids = 2;
+  string mirror_line_id = 3;
+  repeated string created_entity_ids = 4;
+  bool copy = 5;
+  bool keep_constraints = 6;
+}
+
+message LinearPatternIntent {
+  string feature_id = 1;
+  repeated string source_entity_ids = 2;
+  Vec2 direction = 3;
+  double spacing = 4;
+  int32 count = 5;
+  repeated string created_entity_ids = 6;
+  bool keep_constraints = 7;
+}
+
+message CircularPatternIntent {
+  string feature_id = 1;
+  repeated string source_entity_ids = 2;
+  string center_point_id = 3;
+  double total_angle_rad = 4;
+  int32 count = 5;
+  repeated string created_entity_ids = 6;
+  bool rotate_instances = 7;
+  bool keep_constraints = 8;
 }
 
 message SketchSolution {

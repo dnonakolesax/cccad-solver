@@ -182,6 +182,15 @@ void SketchSolverEngine::ApplyIntent(
       break;
     case cccad::solver::v1::UserIntent::kApplyFillet:
     case cccad::solver::v1::UserIntent::kApplyChamfer:
+    case cccad::solver::v1::UserIntent::kUpdateFillet:
+    case cccad::solver::v1::UserIntent::kUpdateChamfer:
+    case cccad::solver::v1::UserIntent::kSplitEntity:
+    case cccad::solver::v1::UserIntent::kBreakEntityAtPoint:
+    case cccad::solver::v1::UserIntent::kTrimEntity:
+    case cccad::solver::v1::UserIntent::kExtendEntity:
+    case cccad::solver::v1::UserIntent::kMirrorEntities:
+    case cccad::solver::v1::UserIntent::kLinearPattern:
+    case cccad::solver::v1::UserIntent::kCircularPattern:
       break;
     case cccad::solver::v1::UserIntent::KIND_NOT_SET:
       break;
@@ -749,6 +758,47 @@ void SketchSolverEngine::ValidateIntent(const cccad::solver::v1::UserIntent& int
                            message, {entity_id}, {}, {}, result);
         }
       };
+  auto require_existing_entity_id =
+      [&](const std::string& entity_id, std::string_view message) {
+        if (!Contains(entity_ids, entity_id)) {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent_reference",
+                           message, {entity_id}, {}, {}, result);
+        }
+      };
+  auto require_finite_vec2 =
+      [&](const cccad::solver::v1::Vec2& value, std::string_view message) {
+        if (!IsFinite(value.x()) || !IsFinite(value.y())) {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                           message, {}, {}, {}, result);
+        }
+      };
+  auto append_unsupported_intent =
+      [&](std::string_view message) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "unsupported_intent",
+                         message, {}, {}, {}, result);
+      };
+  auto require_existing_entity_ids =
+      [&](const google::protobuf::RepeatedPtrField<std::string>& ids,
+          std::string_view empty_message, std::string_view missing_message) {
+        if (ids.empty()) {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                           empty_message, {}, {}, {}, result);
+        }
+        for (const auto& id : ids) {
+          require_existing_entity_id(id, missing_message);
+        }
+      };
+  auto require_new_entity_ids =
+      [&](const google::protobuf::RepeatedPtrField<std::string>& ids,
+          std::string_view empty_message, std::string_view invalid_message) {
+        if (ids.empty()) {
+          AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                           empty_message, {}, {}, {}, result);
+        }
+        for (const auto& id : ids) {
+          require_new_entity_id(id, invalid_message);
+        }
+      };
 
   switch (intent.kind_case()) {
     case cccad::solver::v1::UserIntent::kMovePoint:
@@ -1025,6 +1075,195 @@ void SketchSolverEngine::ValidateIntent(const cccad::solver::v1::UserIntent& int
                        result);
       break;
     }
+    case cccad::solver::v1::UserIntent::kUpdateFillet:
+      if (intent.update_fillet().feature_id().empty()) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "update fillet intent feature id must not be empty", {}, {}, {},
+                         result);
+      }
+      if (!IsFinite(intent.update_fillet().radius()) || intent.update_fillet().radius() <= 0.0) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "update fillet intent radius must be finite and positive", {}, {}, {},
+                         result);
+      }
+      append_unsupported_intent("update fillet intent is not implemented by the solver yet");
+      break;
+    case cccad::solver::v1::UserIntent::kUpdateChamfer:
+      if (intent.update_chamfer().feature_id().empty()) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "update chamfer intent feature id must not be empty", {}, {}, {},
+                         result);
+      }
+      if (!IsFinite(intent.update_chamfer().distance1()) ||
+          intent.update_chamfer().distance1() <= 0.0 ||
+          !IsFinite(intent.update_chamfer().distance2()) ||
+          intent.update_chamfer().distance2() <= 0.0) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "update chamfer intent distances must be finite and positive", {},
+                         {}, {}, result);
+      }
+      append_unsupported_intent("update chamfer intent is not implemented by the solver yet");
+      break;
+    case cccad::solver::v1::UserIntent::kSplitEntity:
+      require_existing_entity_id(intent.split_entity().entity_id(),
+                                 "split entity intent must reference an existing entity");
+      require_new_entity_id(intent.split_entity().created_point_id(),
+                            "split entity intent created point id must be a new entity id");
+      if (intent.split_entity().created_entity_ids().empty()) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "split entity intent must include created entity ids", {}, {}, {},
+                         result);
+      }
+      for (const auto& created_id : intent.split_entity().created_entity_ids()) {
+        require_new_entity_id(created_id,
+                              "split entity intent created entity ids must be new entity ids");
+      }
+      require_finite_vec2(intent.split_entity().pick_point(),
+                          "split entity intent pick point must be finite");
+      append_unsupported_intent("split entity intent is not implemented by the solver yet");
+      break;
+    case cccad::solver::v1::UserIntent::kBreakEntityAtPoint:
+      require_existing_entity_id(
+          intent.break_entity_at_point().entity_id(),
+          "break entity at point intent must reference an existing entity");
+      require_constraint_reference_kind(
+          intent.break_entity_at_point().point_id(), cccad::solver::v1::Entity::kPoint,
+          "break entity at point intent point reference must be a point entity", {});
+      require_existing_entity_id(
+          intent.break_entity_at_point().point_id(),
+          "break entity at point intent must reference an existing point");
+      if (intent.break_entity_at_point().created_entity_ids().empty()) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "break entity at point intent must include created entity ids", {},
+                         {}, {}, result);
+      }
+      for (const auto& created_id : intent.break_entity_at_point().created_entity_ids()) {
+        require_new_entity_id(
+            created_id,
+            "break entity at point intent created entity ids must be new entity ids");
+      }
+      require_finite_vec2(intent.break_entity_at_point().pick_point(),
+                          "break entity at point intent pick point must be finite");
+      append_unsupported_intent(
+          "break entity at point intent is not implemented by the solver yet");
+      break;
+    case cccad::solver::v1::UserIntent::kTrimEntity:
+      require_existing_entity_id(intent.trim_entity().entity_id(),
+                                 "trim entity intent must reference an existing entity");
+      for (const auto& boundary_id : intent.trim_entity().boundary_entity_ids()) {
+        require_existing_entity_id(
+            boundary_id, "trim entity intent boundary references must point to existing entities");
+      }
+      require_finite_vec2(intent.trim_entity().pick_point(),
+                          "trim entity intent pick point must be finite");
+      append_unsupported_intent("trim entity intent is not implemented by the solver yet");
+      break;
+    case cccad::solver::v1::UserIntent::kExtendEntity:
+      require_existing_entity_id(intent.extend_entity().entity_id(),
+                                 "extend entity intent must reference an existing entity");
+      for (const auto& target_id : intent.extend_entity().target_entity_ids()) {
+        require_existing_entity_id(
+            target_id, "extend entity intent target references must point to existing entities");
+      }
+      if (intent.extend_entity().endpoint().empty()) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "extend entity intent endpoint must not be empty", {}, {}, {},
+                         result);
+      }
+      require_finite_vec2(intent.extend_entity().target(),
+                          "extend entity intent target must be finite");
+      append_unsupported_intent("extend entity intent is not implemented by the solver yet");
+      break;
+    case cccad::solver::v1::UserIntent::kMirrorEntities:
+      if (intent.mirror_entities().feature_id().empty()) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "mirror entities intent feature id must not be empty", {}, {}, {},
+                         result);
+      }
+      require_existing_entity_ids(
+          intent.mirror_entities().source_entity_ids(),
+          "mirror entities intent must include source entity ids",
+          "mirror entities intent source references must point to existing entities");
+      require_constraint_reference_kind(
+          intent.mirror_entities().mirror_line_id(), cccad::solver::v1::Entity::kLine,
+          "mirror entities intent mirror reference must be a line entity", {});
+      require_existing_entity_id(
+          intent.mirror_entities().mirror_line_id(),
+          "mirror entities intent must reference an existing mirror line");
+      require_new_entity_ids(
+          intent.mirror_entities().created_entity_ids(),
+          "mirror entities intent must include created entity ids",
+          "mirror entities intent created entity ids must be new entity ids");
+      append_unsupported_intent("mirror entities intent is not implemented by the solver yet");
+      break;
+    case cccad::solver::v1::UserIntent::kLinearPattern:
+      if (intent.linear_pattern().feature_id().empty()) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "linear pattern intent feature id must not be empty", {}, {}, {},
+                         result);
+      }
+      require_existing_entity_ids(
+          intent.linear_pattern().source_entity_ids(),
+          "linear pattern intent must include source entity ids",
+          "linear pattern intent source references must point to existing entities");
+      require_finite_vec2(intent.linear_pattern().direction(),
+                          "linear pattern intent direction must be finite");
+      if (intent.linear_pattern().direction().x() == 0.0 &&
+          intent.linear_pattern().direction().y() == 0.0) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "linear pattern intent direction must be non-zero", {}, {}, {},
+                         result);
+      }
+      if (!IsFinite(intent.linear_pattern().spacing()) ||
+          intent.linear_pattern().spacing() <= 0.0) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "linear pattern intent spacing must be finite and positive", {},
+                         {}, {}, result);
+      }
+      if (intent.linear_pattern().count() < 2) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "linear pattern intent count must be at least 2", {}, {}, {},
+                         result);
+      }
+      require_new_entity_ids(
+          intent.linear_pattern().created_entity_ids(),
+          "linear pattern intent must include created entity ids",
+          "linear pattern intent created entity ids must be new entity ids");
+      append_unsupported_intent("linear pattern intent is not implemented by the solver yet");
+      break;
+    case cccad::solver::v1::UserIntent::kCircularPattern:
+      if (intent.circular_pattern().feature_id().empty()) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "circular pattern intent feature id must not be empty", {}, {}, {},
+                         result);
+      }
+      require_existing_entity_ids(
+          intent.circular_pattern().source_entity_ids(),
+          "circular pattern intent must include source entity ids",
+          "circular pattern intent source references must point to existing entities");
+      require_constraint_reference_kind(
+          intent.circular_pattern().center_point_id(), cccad::solver::v1::Entity::kPoint,
+          "circular pattern intent center reference must be a point entity", {});
+      require_existing_entity_id(
+          intent.circular_pattern().center_point_id(),
+          "circular pattern intent must reference an existing center point");
+      if (!IsFinite(intent.circular_pattern().total_angle_rad()) ||
+          intent.circular_pattern().total_angle_rad() == 0.0) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "circular pattern intent total angle must be finite and non-zero", {},
+                         {}, {}, result);
+      }
+      if (intent.circular_pattern().count() < 2) {
+        AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                         "circular pattern intent count must be at least 2", {}, {}, {},
+                         result);
+      }
+      require_new_entity_ids(
+          intent.circular_pattern().created_entity_ids(),
+          "circular pattern intent must include created entity ids",
+          "circular pattern intent created entity ids must be new entity ids");
+      append_unsupported_intent("circular pattern intent is not implemented by the solver yet");
+      break;
     case cccad::solver::v1::UserIntent::KIND_NOT_SET:
       break;
   }

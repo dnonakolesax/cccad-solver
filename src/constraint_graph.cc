@@ -292,6 +292,50 @@ ConstraintGraphSeed ConstraintGraph::SeedForIntent(const cccad::solver::v1::User
       return {.entity_ids = {intent.apply_chamfer().line1_id(),
                              intent.apply_chamfer().line2_id(),
                              intent.apply_chamfer().corner_point_id()}};
+    case cccad::solver::v1::UserIntent::kUpdateFillet:
+      return {};
+    case cccad::solver::v1::UserIntent::kUpdateChamfer:
+      return {};
+    case cccad::solver::v1::UserIntent::kSplitEntity:
+      return {.entity_ids = {intent.split_entity().entity_id()}};
+    case cccad::solver::v1::UserIntent::kBreakEntityAtPoint:
+      return {.entity_ids = {intent.break_entity_at_point().entity_id(),
+                             intent.break_entity_at_point().point_id()}};
+    case cccad::solver::v1::UserIntent::kTrimEntity: {
+      std::vector<std::string> entity_ids = {intent.trim_entity().entity_id()};
+      for (const auto& boundary_id : intent.trim_entity().boundary_entity_ids()) {
+        entity_ids.push_back(boundary_id);
+      }
+      return {.entity_ids = std::move(entity_ids)};
+    }
+    case cccad::solver::v1::UserIntent::kExtendEntity: {
+      std::vector<std::string> entity_ids = {intent.extend_entity().entity_id()};
+      for (const auto& target_id : intent.extend_entity().target_entity_ids()) {
+        entity_ids.push_back(target_id);
+      }
+      return {.entity_ids = std::move(entity_ids)};
+    }
+    case cccad::solver::v1::UserIntent::kMirrorEntities: {
+      std::vector<std::string> entity_ids = {intent.mirror_entities().mirror_line_id()};
+      for (const auto& source_id : intent.mirror_entities().source_entity_ids()) {
+        entity_ids.push_back(source_id);
+      }
+      return {.entity_ids = std::move(entity_ids)};
+    }
+    case cccad::solver::v1::UserIntent::kLinearPattern: {
+      std::vector<std::string> entity_ids;
+      for (const auto& source_id : intent.linear_pattern().source_entity_ids()) {
+        entity_ids.push_back(source_id);
+      }
+      return {.entity_ids = std::move(entity_ids)};
+    }
+    case cccad::solver::v1::UserIntent::kCircularPattern: {
+      std::vector<std::string> entity_ids = {intent.circular_pattern().center_point_id()};
+      for (const auto& source_id : intent.circular_pattern().source_entity_ids()) {
+        entity_ids.push_back(source_id);
+      }
+      return {.entity_ids = std::move(entity_ids)};
+    }
     case cccad::solver::v1::UserIntent::KIND_NOT_SET:
       return {};
   }
