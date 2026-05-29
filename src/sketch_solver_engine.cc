@@ -36,6 +36,15 @@ bool IsFinite(double value) {
   return std::isfinite(value);
 }
 
+bool IsReservedAxisEntityId(const std::string& entity_id) {
+  return entity_id == "x-axis" || entity_id == "y-axis";
+}
+
+bool IsReservedAxisLine(const cccad::solver::v1::Entity& entity) {
+  return entity.kind_case() == cccad::solver::v1::Entity::kLine &&
+         IsReservedAxisEntityId(entity.id());
+}
+
 std::optional<std::size_t> ReadSizeLimit(const char* name) {
   const char* value = std::getenv(name);
   if (value == nullptr || *value == '\0') {
@@ -288,6 +297,9 @@ SketchSolverEngine::ValidationResult SketchSolverEngine::ValidateModel(
   entity_ids.reserve(static_cast<std::size_t>(model.entities_size()));
   entity_kinds.reserve(static_cast<std::size_t>(model.entities_size()));
   for (const auto& entity : model.entities()) {
+    if (IsReservedAxisLine(entity)) {
+      continue;
+    }
     if (entity.id().empty()) {
       AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_entity",
                        "entity id must not be empty", {}, {}, {}, &result);
@@ -323,6 +335,9 @@ SketchSolverEngine::ValidationResult SketchSolverEngine::ValidateModel(
   }
 
   for (const auto& entity : model.entities()) {
+    if (IsReservedAxisLine(entity)) {
+      continue;
+    }
     switch (entity.kind_case()) {
       case cccad::solver::v1::Entity::kLine:
         if (!ContainsKey(entity_kinds, entity.line().start_point_id()) ||

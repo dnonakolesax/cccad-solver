@@ -1245,6 +1245,44 @@ void ClosedLineCircuitReturnsExtrudableProfile() {
   Require(profile.valid_for_extrude(), "closed rectangle should be valid for extrude");
 }
 
+void ReservedAxisLinesDoNotInvalidateSolve() {
+  SolveRequest request;
+  auto add_point = [&](const char* id, double x, double y) {
+    auto* point = request.mutable_model()->add_entities();
+    point->set_id(id);
+    point->mutable_point()->set_x(x);
+    point->mutable_point()->set_y(y);
+  };
+  auto add_line = [&](const char* id, const char* start_id, const char* end_id) {
+    auto* line = request.mutable_model()->add_entities();
+    line->set_id(id);
+    line->mutable_line()->set_start_point_id(start_id);
+    line->mutable_line()->set_end_point_id(end_id);
+  };
+  add_line("x-axis", "", "");
+  add_line("y-axis", "", "");
+  add_point("p1", 0.0, 0.0);
+  add_point("p2", 1.0, 0.0);
+  add_point("p3", 1.0, 1.0);
+  add_point("p4", 0.0, 1.0);
+  add_line("l1", "p1", "p2");
+  add_line("l2", "p2", "p3");
+  add_line("l3", "p3", "p4");
+  add_line("l4", "p4", "p1");
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  Require(response.status() != SOLVE_STATUS_INCONSISTENT,
+          "reserved axis helpers should not invalidate solve");
+  Require(response.solution().profiles_size() == 1,
+          "reserved axis helpers should not prevent profile extraction");
+  for (const auto& entity : response.solution().entities()) {
+    Require(entity.id() != "x-axis" && entity.id() != "y-axis",
+            "reserved axis helpers should not be exported as solved sketch entities");
+  }
+}
+
 void NestedClosedLineCircuitsReturnInnerLoop() {
   SolveRequest request;
   auto add_point = [&](const char* id, double x, double y) {
@@ -1815,6 +1853,7 @@ int main() {
   EqualLengthRejectsNonLineReferences();
   SolvedLineIsReturned();
   ClosedLineCircuitReturnsExtrudableProfile();
+  ReservedAxisLinesDoNotInvalidateSolve();
   NestedClosedLineCircuitsReturnInnerLoop();
   AnalyzeReturnsRealComponents();
   ApplyIntentReportsAffectedComponentOnly();
