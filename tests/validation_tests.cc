@@ -1245,7 +1245,7 @@ void ClosedLineCircuitReturnsExtrudableProfile() {
   Require(profile.valid_for_extrude(), "closed rectangle should be valid for extrude");
 }
 
-void ReservedAxisLinesDoNotInvalidateSolve() {
+void ReservedReferenceEntitiesDoNotInvalidateSolve() {
   SolveRequest request;
   auto add_point = [&](const char* id, double x, double y) {
     auto* point = request.mutable_model()->add_entities();
@@ -1259,8 +1259,13 @@ void ReservedAxisLinesDoNotInvalidateSolve() {
     line->mutable_line()->set_start_point_id(start_id);
     line->mutable_line()->set_end_point_id(end_id);
   };
-  add_line("x-axis", "", "");
-  add_line("y-axis", "", "");
+  add_point("x-axis-start", -9999.0, 0.0);
+  add_point("x-axis-end", 9999.0, 0.0);
+  add_line("x-axis", "x-axis-start", "x-axis-end");
+  add_point("y-axis-start", 0.0, -9999.0);
+  add_point("y-axis-end", 0.0, 9999.0);
+  add_line("y-axis", "y-axis-start", "y-axis-end");
+  add_point("zero-point", 0.0, 0.0);
   add_point("p1", 0.0, 0.0);
   add_point("p2", 1.0, 0.0);
   add_point("p3", 1.0, 1.0);
@@ -1278,8 +1283,11 @@ void ReservedAxisLinesDoNotInvalidateSolve() {
   Require(response.solution().profiles_size() == 1,
           "reserved axis helpers should not prevent profile extraction");
   for (const auto& entity : response.solution().entities()) {
-    Require(entity.id() != "x-axis" && entity.id() != "y-axis",
-            "reserved axis helpers should not be exported as solved sketch entities");
+    Require(entity.id() != "x-axis" && entity.id() != "y-axis" &&
+                entity.id() != "x-axis-start" && entity.id() != "x-axis-end" &&
+                entity.id() != "y-axis-start" && entity.id() != "y-axis-end" &&
+                entity.id() != "zero-point",
+            "reserved reference helpers should not be exported as solved sketch entities");
   }
 }
 
@@ -1853,7 +1861,7 @@ int main() {
   EqualLengthRejectsNonLineReferences();
   SolvedLineIsReturned();
   ClosedLineCircuitReturnsExtrudableProfile();
-  ReservedAxisLinesDoNotInvalidateSolve();
+  ReservedReferenceEntitiesDoNotInvalidateSolve();
   NestedClosedLineCircuitsReturnInnerLoop();
   AnalyzeReturnsRealComponents();
   ApplyIntentReportsAffectedComponentOnly();

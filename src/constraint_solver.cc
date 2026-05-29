@@ -26,13 +26,15 @@ bool IsActive(cccad::solver::v1::ConstraintStatus status) {
 
 bool IsFinite(double value) { return std::isfinite(value); }
 
-bool IsReservedAxisEntityId(const std::string& entity_id) {
-  return entity_id == "x-axis" || entity_id == "y-axis";
+bool IsReservedReferenceEntityId(const std::string& entity_id) {
+  return entity_id == "x-axis" || entity_id == "y-axis" ||
+         entity_id == "x-axis-start" || entity_id == "x-axis-end" ||
+         entity_id == "y-axis-start" || entity_id == "y-axis-end" ||
+         entity_id == "zero-point";
 }
 
-bool IsReservedAxisLine(const cccad::solver::v1::Entity& entity) {
-  return entity.kind_case() == cccad::solver::v1::Entity::kLine &&
-         IsReservedAxisEntityId(entity.id());
+bool IsReservedReferenceEntity(const cccad::solver::v1::Entity& entity) {
+  return IsReservedReferenceEntityId(entity.id());
 }
 
 double Square(double value) { return value * value; }
@@ -1420,7 +1422,7 @@ SolverModel BuildSolverModel(const cccad::solver::v1::SketchModel& model) {
   SolverModel result;
 
   for (const auto& entity : model.entities()) {
-    if (IsReservedAxisLine(entity)) {
+    if (IsReservedReferenceEntity(entity)) {
       continue;
     }
     result.entity_kinds.emplace(entity.id(), entity.kind_case());
@@ -1813,7 +1815,7 @@ void WriteSolverSolution(const cccad::solver::v1::SketchModel& proto_model,
   std::vector<const cccad::solver::v1::Entity*> entities;
   entities.reserve(static_cast<std::size_t>(proto_model.entities_size()));
   for (const auto& entity : proto_model.entities()) {
-    if (IsReservedAxisLine(entity)) {
+    if (IsReservedReferenceEntity(entity)) {
       continue;
     }
     entities.push_back(&entity);

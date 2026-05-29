@@ -36,13 +36,15 @@ bool IsFinite(double value) {
   return std::isfinite(value);
 }
 
-bool IsReservedAxisEntityId(const std::string& entity_id) {
-  return entity_id == "x-axis" || entity_id == "y-axis";
+bool IsReservedReferenceEntityId(const std::string& entity_id) {
+  return entity_id == "x-axis" || entity_id == "y-axis" ||
+         entity_id == "x-axis-start" || entity_id == "x-axis-end" ||
+         entity_id == "y-axis-start" || entity_id == "y-axis-end" ||
+         entity_id == "zero-point";
 }
 
-bool IsReservedAxisLine(const cccad::solver::v1::Entity& entity) {
-  return entity.kind_case() == cccad::solver::v1::Entity::kLine &&
-         IsReservedAxisEntityId(entity.id());
+bool IsReservedReferenceEntity(const cccad::solver::v1::Entity& entity) {
+  return IsReservedReferenceEntityId(entity.id());
 }
 
 std::optional<std::size_t> ReadSizeLimit(const char* name) {
@@ -297,7 +299,7 @@ SketchSolverEngine::ValidationResult SketchSolverEngine::ValidateModel(
   entity_ids.reserve(static_cast<std::size_t>(model.entities_size()));
   entity_kinds.reserve(static_cast<std::size_t>(model.entities_size()));
   for (const auto& entity : model.entities()) {
-    if (IsReservedAxisLine(entity)) {
+    if (IsReservedReferenceEntity(entity)) {
       continue;
     }
     if (entity.id().empty()) {
@@ -335,7 +337,7 @@ SketchSolverEngine::ValidationResult SketchSolverEngine::ValidateModel(
   }
 
   for (const auto& entity : model.entities()) {
-    if (IsReservedAxisLine(entity)) {
+    if (IsReservedReferenceEntity(entity)) {
       continue;
     }
     switch (entity.kind_case()) {
