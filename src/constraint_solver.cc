@@ -551,10 +551,6 @@ std::vector<ProfileLoopData> BuildLineProfileLoops(const SolverModel& model) {
     const double signed_area = SignedPolygonArea(loop.vertices);
     loop.area = std::abs(signed_area);
     if (loop.area <= kDefaultTolerance) continue;
-    if (signed_area < 0.0) {
-      std::reverse(loop.entity_ids.begin(), loop.entity_ids.end());
-      std::reverse(loop.vertices.begin(), loop.vertices.end());
-    }
     RotateLoopToSmallestEntityId(&loop);
     loops.push_back(std::move(loop));
   }
