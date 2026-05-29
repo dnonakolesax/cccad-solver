@@ -1206,6 +1206,87 @@ void SolvedLineIsReturned() {
   Require(found_line, "solved solution should preserve line entities");
 }
 
+void ClosedLineCircuitReturnsExtrudableProfile() {
+  SolveRequest request;
+  auto add_point = [&](const char* id, double x, double y) {
+    auto* point = request.mutable_model()->add_entities();
+    point->set_id(id);
+    point->mutable_point()->set_x(x);
+    point->mutable_point()->set_y(y);
+  };
+  auto add_line = [&](const char* id, const char* start_id, const char* end_id) {
+    auto* line = request.mutable_model()->add_entities();
+    line->set_id(id);
+    line->mutable_line()->set_start_point_id(start_id);
+    line->mutable_line()->set_end_point_id(end_id);
+  };
+  add_point("p1", 0.0, 0.0);
+  add_point("p2", 40.0, 0.0);
+  add_point("p3", 40.0, 30.0);
+  add_point("p4", 0.0, 30.0);
+  add_line("l1", "p1", "p2");
+  add_line("l2", "p2", "p3");
+  add_line("l3", "p3", "p4");
+  add_line("l4", "p4", "p1");
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  Require(response.solution().profiles_size() == 1, "closed rectangle should return one profile");
+  const auto& profile = response.solution().profiles(0);
+  Require(profile.id() == "profile_1", "profile id should be deterministic");
+  Require(profile.outer_loop().entity_ids_size() == 4, "rectangle profile should have four border entities");
+  Require(profile.outer_loop().entity_ids(0) == "l1", "rectangle loop should start at l1");
+  Require(profile.outer_loop().entity_ids(1) == "l2", "rectangle loop should include l2");
+  Require(profile.outer_loop().entity_ids(2) == "l3", "rectangle loop should include l3");
+  Require(profile.outer_loop().entity_ids(3) == "l4", "rectangle loop should include l4");
+  Require(profile.inner_loops_size() == 0, "simple rectangle should not have inner loops");
+  Require(std::abs(profile.area() - 1200.0) < 1e-8, "rectangle profile should report area");
+  Require(profile.valid_for_extrude(), "closed rectangle should be valid for extrude");
+}
+
+void NestedClosedLineCircuitsReturnInnerLoop() {
+  SolveRequest request;
+  auto add_point = [&](const char* id, double x, double y) {
+    auto* point = request.mutable_model()->add_entities();
+    point->set_id(id);
+    point->mutable_point()->set_x(x);
+    point->mutable_point()->set_y(y);
+  };
+  auto add_line = [&](const char* id, const char* start_id, const char* end_id) {
+    auto* line = request.mutable_model()->add_entities();
+    line->set_id(id);
+    line->mutable_line()->set_start_point_id(start_id);
+    line->mutable_line()->set_end_point_id(end_id);
+  };
+  add_point("p1", 0.0, 0.0);
+  add_point("p2", 10.0, 0.0);
+  add_point("p3", 10.0, 10.0);
+  add_point("p4", 0.0, 10.0);
+  add_line("l1", "p1", "p2");
+  add_line("l2", "p2", "p3");
+  add_line("l3", "p3", "p4");
+  add_line("l4", "p4", "p1");
+  add_point("q1", 2.0, 2.0);
+  add_point("q2", 4.0, 2.0);
+  add_point("q3", 4.0, 4.0);
+  add_point("q4", 2.0, 4.0);
+  add_line("m1", "q1", "q2");
+  add_line("m2", "q2", "q3");
+  add_line("m3", "q3", "q4");
+  add_line("m4", "q4", "q1");
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  Require(response.solution().profiles_size() == 1, "nested loops should return one profile");
+  const auto& profile = response.solution().profiles(0);
+  Require(profile.inner_loops_size() == 1, "nested loops should return one inner loop");
+  Require(profile.inner_loops(0).entity_ids_size() == 4, "inner loop should list border entities");
+  Require(profile.inner_loops(0).entity_ids(0) == "m1", "inner loop should be deterministic");
+  Require(std::abs(profile.area() - 96.0) < 1e-8, "nested profile area should subtract hole");
+}
+
 void AnalyzeReturnsRealComponents() {
   AnalyzeRequest request;
   auto* a = request.mutable_model()->add_entities();
@@ -1733,6 +1814,8 @@ int main() {
   RoundArcConstraintsAreSolved();
   EqualLengthRejectsNonLineReferences();
   SolvedLineIsReturned();
+  ClosedLineCircuitReturnsExtrudableProfile();
+  NestedClosedLineCircuitsReturnInnerLoop();
   AnalyzeReturnsRealComponents();
   ApplyIntentReportsAffectedComponentOnly();
   ApplyIntentSolvesOnlyAffectedComponent();

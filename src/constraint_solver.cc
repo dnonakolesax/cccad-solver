@@ -4,6 +4,7 @@
 #include <cmath>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -373,6 +374,255 @@ bool RepeatedStringsEqual(const google::protobuf::RepeatedPtrField<std::string>&
     }
   }
   return true;
+}
+
+struct ProfilePoint {
+  double x = 0.0;
+  double y = 0.0;
+};
+
+struct ProfileLoopData {
+  std::vector<std::string> entity_ids;
+  std::vector<ProfilePoint> vertices;
+  ProfilePoint center;
+  double area = 0.0;
+  double radius = 0.0;
+  bool is_circle = false;
+};
+
+struct ProfileData {
+  ProfileLoopData outer_loop;
+  std::vector<ProfileLoopData> inner_loops;
+  double area = 0.0;
+};
+
+double SignedPolygonArea(const std::vector<ProfilePoint>& vertices) {
+  if (vertices.size() < 3) return 0.0;
+  double sum = 0.0;
+  for (std::size_t index = 0; index < vertices.size(); ++index) {
+    const ProfilePoint& current = vertices[index];
+    const ProfilePoint& next = vertices[(index + 1) % vertices.size()];
+    sum += current.x * next.y - next.x * current.y;
+  }
+  return 0.5 * sum;
+}
+
+void RotateLoopToSmallestEntityId(ProfileLoopData* loop) {
+  if (loop->entity_ids.empty()) return;
+  const auto min_it = std::min_element(loop->entity_ids.begin(), loop->entity_ids.end());
+  const std::size_t offset = static_cast<std::size_t>(min_it - loop->entity_ids.begin());
+  std::rotate(loop->entity_ids.begin(), loop->entity_ids.begin() + offset, loop->entity_ids.end());
+  if (!loop->vertices.empty() && loop->vertices.size() == loop->entity_ids.size()) {
+    std::rotate(loop->vertices.begin(), loop->vertices.begin() + offset, loop->vertices.end());
+  }
+}
+
+bool PointInPolygon(const ProfilePoint& point, const std::vector<ProfilePoint>& polygon) {
+  if (polygon.size() < 3) return false;
+  bool inside = false;
+  for (std::size_t index = 0, previous = polygon.size() - 1; index < polygon.size();
+       previous = index++) {
+    const ProfilePoint& a = polygon[index];
+    const ProfilePoint& b = polygon[previous];
+    if ((a.y > point.y) != (b.y > point.y)) {
+      const double x_intersection = (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x;
+      if (point.x < x_intersection) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+ProfilePoint RepresentativePoint(const ProfileLoopData& loop) {
+  if (loop.is_circle) return loop.center;
+  return loop.vertices.empty() ? ProfilePoint{} : loop.vertices.front();
+}
+
+bool LoopContainsLoop(const ProfileLoopData& outer, const ProfileLoopData& inner) {
+  if (outer.entity_ids == inner.entity_ids) return false;
+  const ProfilePoint representative = RepresentativePoint(inner);
+  if (outer.is_circle) {
+    return Distance(outer.center.x, outer.center.y, representative.x, representative.y) <
+           outer.radius - kDefaultTolerance;
+  }
+  return PointInPolygon(representative, outer.vertices);
+}
+
+std::vector<ProfileLoopData> BuildLineProfileLoops(const SolverModel& model) {
+  struct LineEdge {
+    std::string id;
+    std::string start_point_id;
+    std::string end_point_id;
+  };
+
+  std::vector<LineEdge> lines;
+  lines.reserve(model.lines.size());
+  for (const auto& [id, line] : model.lines) {
+    if (line.start_point_id == line.end_point_id) continue;
+    if (!model.points.contains(line.start_point_id) || !model.points.contains(line.end_point_id)) {
+      continue;
+    }
+    lines.push_back({id, line.start_point_id, line.end_point_id});
+  }
+  std::sort(lines.begin(), lines.end(),
+            [](const LineEdge& lhs, const LineEdge& rhs) { return lhs.id < rhs.id; });
+
+  std::unordered_map<std::string, const LineEdge*> line_by_id;
+  std::unordered_map<std::string, std::vector<std::string>> point_to_line_ids;
+  for (const LineEdge& line : lines) {
+    line_by_id[line.id] = &line;
+    point_to_line_ids[line.start_point_id].push_back(line.id);
+    point_to_line_ids[line.end_point_id].push_back(line.id);
+  }
+  for (auto& [unused, line_ids] : point_to_line_ids) {
+    (void)unused;
+    std::sort(line_ids.begin(), line_ids.end());
+  }
+
+  std::vector<ProfileLoopData> loops;
+  std::unordered_set<std::string> visited_lines;
+  for (const LineEdge& seed : lines) {
+    if (visited_lines.contains(seed.id)) continue;
+
+    std::vector<std::string> component_lines;
+    std::vector<std::string> pending = {seed.id};
+    std::unordered_set<std::string> component_line_set;
+    std::unordered_set<std::string> component_points;
+    while (!pending.empty()) {
+      const std::string line_id = pending.back();
+      pending.pop_back();
+      if (!component_line_set.insert(line_id).second) continue;
+      const LineEdge* line = line_by_id[line_id];
+      component_lines.push_back(line_id);
+      component_points.insert(line->start_point_id);
+      component_points.insert(line->end_point_id);
+      for (const std::string& point_id : {line->start_point_id, line->end_point_id}) {
+        for (const std::string& next_line_id : point_to_line_ids[point_id]) {
+          if (!component_line_set.contains(next_line_id)) pending.push_back(next_line_id);
+        }
+      }
+    }
+    for (const std::string& line_id : component_lines) visited_lines.insert(line_id);
+    if (component_lines.size() < 3 || component_lines.size() != component_points.size()) continue;
+
+    bool is_simple_cycle = true;
+    for (const std::string& point_id : component_points) {
+      if (point_to_line_ids[point_id].size() != 2) {
+        is_simple_cycle = false;
+        break;
+      }
+    }
+    if (!is_simple_cycle) continue;
+
+    std::sort(component_lines.begin(), component_lines.end());
+    const LineEdge* start_line = line_by_id[component_lines.front()];
+    const std::string start_point_id = std::min(start_line->start_point_id, start_line->end_point_id);
+    std::string current_point_id = start_point_id;
+    std::unordered_set<std::string> used_lines;
+    ProfileLoopData loop;
+    for (;;) {
+      const auto& incident_lines = point_to_line_ids[current_point_id];
+      const auto next_line_it = std::find_if(
+          incident_lines.begin(), incident_lines.end(), [&](const std::string& line_id) {
+            return component_line_set.contains(line_id) && !used_lines.contains(line_id);
+          });
+      if (next_line_it == incident_lines.end()) break;
+      const LineEdge* line = line_by_id[*next_line_it];
+      used_lines.insert(line->id);
+      loop.entity_ids.push_back(line->id);
+      const SolverPoint& point = model.points.at(current_point_id);
+      loop.vertices.push_back({point.x, point.y});
+      current_point_id = line->start_point_id == current_point_id ? line->end_point_id
+                                                                  : line->start_point_id;
+      if (current_point_id == start_point_id) break;
+    }
+    if (used_lines.size() != component_lines.size() || current_point_id != start_point_id) continue;
+
+    const double signed_area = SignedPolygonArea(loop.vertices);
+    loop.area = std::abs(signed_area);
+    if (loop.area <= kDefaultTolerance) continue;
+    if (signed_area < 0.0) {
+      std::reverse(loop.entity_ids.begin(), loop.entity_ids.end());
+      std::reverse(loop.vertices.begin(), loop.vertices.end());
+    }
+    RotateLoopToSmallestEntityId(&loop);
+    loops.push_back(std::move(loop));
+  }
+  return loops;
+}
+
+std::vector<ProfileLoopData> BuildCircleProfileLoops(const SolverModel& model) {
+  std::vector<ProfileLoopData> loops;
+  for (const auto& [id, circle] : model.circles) {
+    const auto center_it = model.points.find(circle.center_point_id);
+    if (center_it == model.points.end() || circle.radius <= kMinimumRadius ||
+        !IsFinite(circle.radius)) {
+      continue;
+    }
+    ProfileLoopData loop;
+    loop.entity_ids = {id};
+    loop.center = {center_it->second.x, center_it->second.y};
+    loop.radius = circle.radius;
+    loop.area = kPi * circle.radius * circle.radius;
+    loop.is_circle = true;
+    loops.push_back(std::move(loop));
+  }
+  std::sort(loops.begin(), loops.end(), [](const ProfileLoopData& lhs, const ProfileLoopData& rhs) {
+    return lhs.entity_ids.front() < rhs.entity_ids.front();
+  });
+  return loops;
+}
+
+std::vector<ProfileData> BuildProfiles(const SolverModel& model) {
+  std::vector<ProfileLoopData> loops = BuildLineProfileLoops(model);
+  std::vector<ProfileLoopData> circle_loops = BuildCircleProfileLoops(model);
+  loops.insert(loops.end(), circle_loops.begin(), circle_loops.end());
+  std::sort(loops.begin(), loops.end(), [](const ProfileLoopData& lhs, const ProfileLoopData& rhs) {
+    if (lhs.area != rhs.area) return lhs.area > rhs.area;
+    return lhs.entity_ids.front() < rhs.entity_ids.front();
+  });
+
+  std::vector<int> parent(loops.size(), -1);
+  for (std::size_t index = 0; index < loops.size(); ++index) {
+    for (std::size_t candidate = 0; candidate < loops.size(); ++candidate) {
+      if (candidate == index || loops[candidate].area <= loops[index].area) continue;
+      if (!LoopContainsLoop(loops[candidate], loops[index])) continue;
+      if (parent[index] < 0 ||
+          loops[candidate].area < loops[static_cast<std::size_t>(parent[index])].area) {
+        parent[index] = static_cast<int>(candidate);
+      }
+    }
+  }
+
+  std::vector<ProfileData> profiles;
+  std::unordered_map<std::size_t, std::size_t> profile_by_outer_loop;
+  for (std::size_t index = 0; index < loops.size(); ++index) {
+    if (parent[index] >= 0) continue;
+    ProfileData profile;
+    profile.outer_loop = loops[index];
+    profile.area = loops[index].area;
+    profile_by_outer_loop[index] = profiles.size();
+    profiles.push_back(std::move(profile));
+  }
+  for (std::size_t index = 0; index < loops.size(); ++index) {
+    if (parent[index] < 0 || parent[static_cast<std::size_t>(parent[index])] >= 0) continue;
+    const std::size_t outer_index = static_cast<std::size_t>(parent[index]);
+    auto profile_it = profile_by_outer_loop.find(outer_index);
+    if (profile_it == profile_by_outer_loop.end()) continue;
+    ProfileData& profile = profiles[profile_it->second];
+    profile.area -= loops[index].area;
+    profile.inner_loops.push_back(loops[index]);
+  }
+
+  for (ProfileData& profile : profiles) {
+    std::sort(profile.inner_loops.begin(), profile.inner_loops.end(),
+              [](const ProfileLoopData& lhs, const ProfileLoopData& rhs) {
+                return lhs.entity_ids.front() < rhs.entity_ids.front();
+              });
+  }
+  std::sort(profiles.begin(), profiles.end(), [](const ProfileData& lhs, const ProfileData& rhs) {
+    return lhs.outer_loop.entity_ids.front() < rhs.outer_loop.entity_ids.front();
+  });
+  return profiles;
 }
 
 void AddResidualEntry(std::vector<ResidualEntry>* residuals,
@@ -1589,6 +1839,25 @@ void WriteSolverSolution(const cccad::solver::v1::SketchModel& proto_model,
       case cccad::solver::v1::Entity::KIND_NOT_SET:
         break;
     }
+  }
+
+  std::vector<ProfileData> profiles = BuildProfiles(model);
+  for (std::size_t index = 0; index < profiles.size(); ++index) {
+    const ProfileData& profile_data = profiles[index];
+    auto* profile = solution->add_profiles();
+    profile->set_id("profile_" + std::to_string(index + 1));
+    for (const std::string& entity_id : profile_data.outer_loop.entity_ids) {
+      profile->mutable_outer_loop()->add_entity_ids(entity_id);
+    }
+    for (const ProfileLoopData& inner_loop_data : profile_data.inner_loops) {
+      auto* inner_loop = profile->add_inner_loops();
+      for (const std::string& entity_id : inner_loop_data.entity_ids) {
+        inner_loop->add_entity_ids(entity_id);
+      }
+    }
+    profile->set_area(profile_data.area);
+    profile->set_valid_for_extrude(profile_data.area > kDefaultTolerance &&
+                                   !profile_data.outer_loop.entity_ids.empty());
   }
 }
 

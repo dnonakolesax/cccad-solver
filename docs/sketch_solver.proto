@@ -365,6 +365,19 @@ message CircularPatternIntent {
 
 message SketchSolution {
   repeated SolvedEntity entities = 1;
+  repeated Profile profiles = 2;
+}
+
+message Profile {
+  string id = 1;
+  ProfileLoop outer_loop = 2;
+  repeated ProfileLoop inner_loops = 3;
+  double area = 4;
+  bool valid_for_extrude = 5;
+}
+
+message ProfileLoop {
+  repeated string entity_ids = 1;
 }
 
 message SolvedEntity {
