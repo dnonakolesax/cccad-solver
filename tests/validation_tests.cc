@@ -1245,6 +1245,50 @@ void ClosedLineCircuitReturnsExtrudableProfile() {
   Require(profile.valid_for_extrude(), "closed rectangle should be valid for extrude");
 }
 
+void ChamferedLineCircuitReturnsProfileWithCornerHelpers() {
+  SolveRequest request;
+  auto add_point = [&](const char* id, double x, double y) {
+    auto* point = request.mutable_model()->add_entities();
+    point->set_id(id);
+    point->mutable_point()->set_x(x);
+    point->mutable_point()->set_y(y);
+  };
+  auto add_line = [&](const char* id, const char* start_id, const char* end_id) {
+    auto* line = request.mutable_model()->add_entities();
+    line->set_id(id);
+    line->mutable_line()->set_start_point_id(start_id);
+    line->mutable_line()->set_end_point_id(end_id);
+  };
+
+  add_point("p1", 0.0, 0.0);
+  add_point("p2", 10.0, 0.0);
+  add_point("p3", 10.0, 10.0);
+  add_point("p4", 0.0, 10.0);
+  add_point("c1", 7.0, 0.0);
+  add_point("c2", 10.0, 3.0);
+
+  add_line("l1", "p1", "c1");
+  add_line("chamfer", "c1", "c2");
+  add_line("l2", "c2", "p3");
+  add_line("l3", "p3", "p4");
+  add_line("l4", "p4", "p1");
+  add_line("corner_helper_1", "c1", "p2");
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  Require(response.solution().profiles_size() == 1,
+          "chamfered rectangle with a corner helper edge should return one profile");
+  const auto& profile = response.solution().profiles(0);
+  Require(profile.outer_loop().entity_ids_size() == 5,
+          "chamfered outer profile should include the five visible border segments");
+  Require(profile.outer_loop().entity_ids(0) == "chamfer",
+          "chamfered outer profile should have deterministic loop ordering");
+  Require(std::abs(profile.area() - 95.5) < 1e-8,
+          "chamfered outer profile should report the clipped rectangle area");
+  Require(profile.valid_for_extrude(), "chamfered outer profile should be valid for extrude");
+}
+
 void ReservedReferenceEntitiesDoNotInvalidateSolve() {
   SolveRequest request;
   auto add_point = [&](const char* id, double x, double y) {
@@ -1861,6 +1905,7 @@ int main() {
   EqualLengthRejectsNonLineReferences();
   SolvedLineIsReturned();
   ClosedLineCircuitReturnsExtrudableProfile();
+  ChamferedLineCircuitReturnsProfileWithCornerHelpers();
   ReservedReferenceEntitiesDoNotInvalidateSolve();
   NestedClosedLineCircuitsReturnInnerLoop();
   AnalyzeReturnsRealComponents();

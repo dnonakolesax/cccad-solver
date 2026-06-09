@@ -616,6 +616,16 @@ std::vector<ProfileLoopData> BuildLineProfileLoops(const SolverModel& model) {
     std::string start_point_id;
     std::string end_point_id;
   };
+  struct IncidentLine {
+    std::string line_id;
+    std::string other_point_id;
+    double angle = 0.0;
+  };
+  struct DirectedLine {
+    std::string line_id;
+    std::string from_point_id;
+    std::string to_point_id;
+  };
 
   std::vector<LineEdge> lines;
   lines.reserve(model.lines.size());
@@ -629,83 +639,111 @@ std::vector<ProfileLoopData> BuildLineProfileLoops(const SolverModel& model) {
   std::sort(lines.begin(), lines.end(),
             [](const LineEdge& lhs, const LineEdge& rhs) { return lhs.id < rhs.id; });
 
-  std::unordered_map<std::string, const LineEdge*> line_by_id;
-  std::unordered_map<std::string, std::vector<std::string>> point_to_line_ids;
+  std::unordered_map<std::string, std::vector<IncidentLine>> point_to_lines;
   for (const LineEdge& line : lines) {
-    line_by_id[line.id] = &line;
-    point_to_line_ids[line.start_point_id].push_back(line.id);
-    point_to_line_ids[line.end_point_id].push_back(line.id);
+    const SolverPoint& start = model.points.at(line.start_point_id);
+    const SolverPoint& end = model.points.at(line.end_point_id);
+    point_to_lines[line.start_point_id].push_back({
+        .line_id = line.id,
+        .other_point_id = line.end_point_id,
+        .angle = std::atan2(end.y - start.y, end.x - start.x),
+    });
+    point_to_lines[line.end_point_id].push_back({
+        .line_id = line.id,
+        .other_point_id = line.start_point_id,
+        .angle = std::atan2(start.y - end.y, start.x - end.x),
+    });
   }
-  for (auto& [unused, line_ids] : point_to_line_ids) {
+  for (auto& [unused, incident_lines] : point_to_lines) {
     (void)unused;
-    std::sort(line_ids.begin(), line_ids.end());
+    std::sort(incident_lines.begin(), incident_lines.end(),
+              [](const IncidentLine& lhs, const IncidentLine& rhs) {
+                if (lhs.angle != rhs.angle) return lhs.angle < rhs.angle;
+                return lhs.line_id < rhs.line_id;
+              });
   }
 
   std::vector<ProfileLoopData> loops;
-  std::unordered_set<std::string> visited_lines;
-  for (const LineEdge& seed : lines) {
-    if (visited_lines.contains(seed.id)) continue;
+  std::vector<DirectedLine> directed_lines;
+  directed_lines.reserve(lines.size() * 2);
+  for (const LineEdge& line : lines) {
+    directed_lines.push_back({.line_id = line.id,
+                              .from_point_id = line.start_point_id,
+                              .to_point_id = line.end_point_id});
+    directed_lines.push_back({.line_id = line.id,
+                              .from_point_id = line.end_point_id,
+                              .to_point_id = line.start_point_id});
+  }
+  std::sort(directed_lines.begin(), directed_lines.end(),
+            [](const DirectedLine& lhs, const DirectedLine& rhs) {
+              if (lhs.line_id != rhs.line_id) return lhs.line_id < rhs.line_id;
+              if (lhs.from_point_id != rhs.from_point_id) return lhs.from_point_id < rhs.from_point_id;
+              return lhs.to_point_id < rhs.to_point_id;
+            });
 
-    std::vector<std::string> component_lines;
-    std::vector<std::string> pending = {seed.id};
-    std::unordered_set<std::string> component_line_set;
-    std::unordered_set<std::string> component_points;
-    while (!pending.empty()) {
-      const std::string line_id = pending.back();
-      pending.pop_back();
-      if (!component_line_set.insert(line_id).second) continue;
-      const LineEdge* line = line_by_id[line_id];
-      component_lines.push_back(line_id);
-      component_points.insert(line->start_point_id);
-      component_points.insert(line->end_point_id);
-      for (const std::string& point_id : {line->start_point_id, line->end_point_id}) {
-        for (const std::string& next_line_id : point_to_line_ids[point_id]) {
-          if (!component_line_set.contains(next_line_id)) pending.push_back(next_line_id);
-        }
-      }
-    }
-    for (const std::string& line_id : component_lines) visited_lines.insert(line_id);
-    if (component_lines.size() < 3 || component_lines.size() != component_points.size()) continue;
+  auto directed_key = [](const std::string& line_id, const std::string& from_point_id) {
+    return line_id + '\n' + from_point_id;
+  };
 
-    bool is_simple_cycle = true;
-    for (const std::string& point_id : component_points) {
-      if (point_to_line_ids[point_id].size() != 2) {
-        is_simple_cycle = false;
+  std::unordered_set<std::string> visited_directed_lines;
+  for (const DirectedLine& seed : directed_lines) {
+    const std::string seed_key = directed_key(seed.line_id, seed.from_point_id);
+    if (visited_directed_lines.contains(seed_key)) continue;
+
+    ProfileLoopData loop;
+    std::unordered_set<std::string> local_directed_lines;
+    std::string current_line_id = seed.line_id;
+    std::string current_from_point_id = seed.from_point_id;
+    std::string current_to_point_id = seed.to_point_id;
+    for (;;) {
+      const std::string current_key = directed_key(current_line_id, current_from_point_id);
+      if (local_directed_lines.contains(current_key)) break;
+      local_directed_lines.insert(current_key);
+      visited_directed_lines.insert(current_key);
+
+      loop.entity_ids.push_back(current_line_id);
+      const SolverPoint& point = model.points.at(current_from_point_id);
+      loop.vertices.push_back({point.x, point.y});
+
+      const auto incident_it = point_to_lines.find(current_to_point_id);
+      if (incident_it == point_to_lines.end() || incident_it->second.empty()) break;
+      const auto& incident_lines = incident_it->second;
+      const auto reverse_it =
+          std::find_if(incident_lines.begin(), incident_lines.end(),
+                       [&](const IncidentLine& incident) {
+                         return incident.line_id == current_line_id &&
+                                incident.other_point_id == current_from_point_id;
+                       });
+      if (reverse_it == incident_lines.end()) break;
+      const std::size_t reverse_index =
+          static_cast<std::size_t>(reverse_it - incident_lines.begin());
+      const std::size_t next_index =
+          (reverse_index + incident_lines.size() - 1) % incident_lines.size();
+      const IncidentLine& next = incident_lines[next_index];
+      current_from_point_id = current_to_point_id;
+      current_to_point_id = next.other_point_id;
+      current_line_id = next.line_id;
+
+      if (current_line_id == seed.line_id && current_from_point_id == seed.from_point_id &&
+          current_to_point_id == seed.to_point_id) {
         break;
       }
     }
-    if (!is_simple_cycle) continue;
-
-    std::sort(component_lines.begin(), component_lines.end());
-    const LineEdge* start_line = line_by_id[component_lines.front()];
-    const std::string start_point_id = std::min(start_line->start_point_id, start_line->end_point_id);
-    std::string current_point_id = start_point_id;
-    std::unordered_set<std::string> used_lines;
-    ProfileLoopData loop;
-    for (;;) {
-      const auto& incident_lines = point_to_line_ids[current_point_id];
-      const auto next_line_it = std::find_if(
-          incident_lines.begin(), incident_lines.end(), [&](const std::string& line_id) {
-            return component_line_set.contains(line_id) && !used_lines.contains(line_id);
-          });
-      if (next_line_it == incident_lines.end()) break;
-      const LineEdge* line = line_by_id[*next_line_it];
-      used_lines.insert(line->id);
-      loop.entity_ids.push_back(line->id);
-      const SolverPoint& point = model.points.at(current_point_id);
-      loop.vertices.push_back({point.x, point.y});
-      current_point_id = line->start_point_id == current_point_id ? line->end_point_id
-                                                                  : line->start_point_id;
-      if (current_point_id == start_point_id) break;
+    if (current_line_id != seed.line_id || current_from_point_id != seed.from_point_id ||
+        current_to_point_id != seed.to_point_id || loop.entity_ids.size() < 3) {
+      continue;
     }
-    if (used_lines.size() != component_lines.size() || current_point_id != start_point_id) continue;
 
     const double signed_area = SignedPolygonArea(loop.vertices);
-    loop.area = std::abs(signed_area);
+    if (signed_area <= kDefaultTolerance) continue;
+    loop.area = signed_area;
     if (loop.area <= kDefaultTolerance) continue;
     RotateLoopToSmallestEntityId(&loop);
     loops.push_back(std::move(loop));
   }
+  std::sort(loops.begin(), loops.end(), [](const ProfileLoopData& lhs, const ProfileLoopData& rhs) {
+    return lhs.entity_ids.front() < rhs.entity_ids.front();
+  });
   LogProfileLoops("line_loop_output", loops);
   return loops;
 }
