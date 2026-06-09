@@ -286,7 +286,7 @@ message ApplyChamferIntent {
   string corner_point_id = 4;
   string created_point1_id = 5;
   string created_point2_id = 6;
-  string created_line_id = 7;
+  string created_arc_id = 7;
   double distance1 = 8;
   double distance2 = 9;
   bool trim = 10;

@@ -1079,8 +1079,8 @@ void SketchSolverEngine::ValidateIntent(const cccad::solver::v1::UserIntent& int
                             "chamfer intent created point ids must be new entity ids");
       require_new_entity_id(chamfer.created_point2_id(),
                             "chamfer intent created point ids must be new entity ids");
-      require_new_entity_id(chamfer.created_line_id(),
-                            "chamfer intent created line id must be a new entity id");
+      require_new_entity_id(chamfer.created_arc_id(),
+                            "chamfer intent created arc id must be a new entity id");
       if (!IsFinite(chamfer.distance1()) || chamfer.distance1() <= 0.0 ||
           !IsFinite(chamfer.distance2()) || chamfer.distance2() <= 0.0) {
         AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",

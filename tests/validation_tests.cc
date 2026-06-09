@@ -1674,7 +1674,7 @@ void EditIntentsAreExplicitlyUnsupported() {
     chamfer->set_corner_point_id("corner");
     chamfer->set_created_point1_id("chamfer_p1");
     chamfer->set_created_point2_id("chamfer_p2");
-    chamfer->set_created_line_id("chamfer_line");
+    chamfer->set_created_arc_id("chamfer_line");
     chamfer->set_distance1(1.0);
     chamfer->set_distance2(2.0);
 
