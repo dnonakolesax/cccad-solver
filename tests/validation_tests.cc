@@ -1658,10 +1658,43 @@ void EditIntentsAreExplicitlyUnsupported() {
     fillet->set_corner_point_id("corner");
     fillet->set_created_point1_id("fillet_p1");
     fillet->set_created_point2_id("fillet_p2");
+    fillet->set_created_center_point_id("fillet_center");
     fillet->set_created_arc_id("fillet_arc");
     fillet->set_radius(1.0);
 
-    require_unsupported(request, "fillet intent should be rejected until implemented");
+    ApplyIntentResponse response;
+    SketchSolverEngine{}.ApplyIntent(request, &response);
+
+    bool found_p1 = false;
+    bool found_p2 = false;
+    bool found_center = false;
+    bool found_arc = false;
+    for (const auto& entity : response.solution().entities()) {
+      if (entity.id() == "fillet_p1") {
+        found_p1 = entity.has_point() && std::abs(entity.point().x() - 1.0) < 1e-8 &&
+                   std::abs(entity.point().y()) < 1e-8;
+      } else if (entity.id() == "fillet_p2") {
+        found_p2 = entity.has_point() && std::abs(entity.point().x()) < 1e-8 &&
+                   std::abs(entity.point().y() - 1.0) < 1e-8;
+      } else if (entity.id() == "fillet_center") {
+        found_center = entity.has_point() && std::abs(entity.point().x() - 1.0) < 1e-8 &&
+                       std::abs(entity.point().y() - 1.0) < 1e-8;
+      } else if (entity.id() == "fillet_arc") {
+        found_arc = entity.has_arc() &&
+                    entity.arc().center_point_id() == "fillet_center" &&
+                    entity.arc().start_point_id() == "fillet_p1" &&
+                    entity.arc().end_point_id() == "fillet_p2";
+      }
+    }
+
+    Require(response.status() != SOLVE_STATUS_INCONSISTENT,
+            "fillet intent should be applied");
+    Require(response.diagnostics_size() == 0,
+            "valid fillet intent should not produce diagnostics");
+    Require(found_p1, "fillet intent should return first tangent point");
+    Require(found_p2, "fillet intent should return second tangent point");
+    Require(found_center, "fillet intent should return center point");
+    Require(found_arc, "fillet intent should return arc");
   }
 
   {

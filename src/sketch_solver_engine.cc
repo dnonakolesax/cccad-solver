@@ -80,9 +80,121 @@ bool Contains(const std::unordered_set<std::string>& ids, const std::string& id)
   return !id.empty() && ids.find(id) != ids.end();
 }
 
+struct FilletIntentGeometry {
+  double point1_x = 0.0;
+  double point1_y = 0.0;
+  double point2_x = 0.0;
+  double point2_y = 0.0;
+  double center_x = 0.0;
+  double center_y = 0.0;
+};
+
 template <typename T>
 bool ContainsKey(const std::unordered_map<std::string, T>& values, const std::string& id) {
   return !id.empty() && values.find(id) != values.end();
+}
+
+std::optional<FilletIntentGeometry> BuildFilletIntentGeometry(
+    const cccad::solver::v1::ApplyFilletIntent& fillet,
+    const SolverModel& model) {
+  const auto corner_it = model.points.find(fillet.corner_point_id());
+  const auto line1_it = model.lines.find(fillet.line1_id());
+  const auto line2_it = model.lines.find(fillet.line2_id());
+  if (corner_it == model.points.end() || line1_it == model.lines.end() ||
+      line2_it == model.lines.end()) {
+    return std::nullopt;
+  }
+
+  auto endpoint_away_from_corner = [&](const SolverLine& line) -> const SolverPoint* {
+    const std::string* other_point_id = nullptr;
+    if (line.start_point_id == fillet.corner_point_id()) {
+      other_point_id = &line.end_point_id;
+    } else if (line.end_point_id == fillet.corner_point_id()) {
+      other_point_id = &line.start_point_id;
+    } else {
+      return nullptr;
+    }
+    const auto other_it = model.points.find(*other_point_id);
+    return other_it == model.points.end() ? nullptr : &other_it->second;
+  };
+
+  const SolverPoint& corner = corner_it->second;
+  const SolverPoint* endpoint1 = endpoint_away_from_corner(line1_it->second);
+  const SolverPoint* endpoint2 = endpoint_away_from_corner(line2_it->second);
+  if (endpoint1 == nullptr || endpoint2 == nullptr) {
+    return std::nullopt;
+  }
+
+  const double dx1 = endpoint1->x - corner.x;
+  const double dy1 = endpoint1->y - corner.y;
+  const double dx2 = endpoint2->x - corner.x;
+  const double dy2 = endpoint2->y - corner.y;
+  const double length1 = std::sqrt(dx1 * dx1 + dy1 * dy1);
+  const double length2 = std::sqrt(dx2 * dx2 + dy2 * dy2);
+  if (length1 <= 1e-12 || length2 <= 1e-12) {
+    return std::nullopt;
+  }
+
+  const double ux1 = dx1 / length1;
+  const double uy1 = dy1 / length1;
+  const double ux2 = dx2 / length2;
+  const double uy2 = dy2 / length2;
+  const double dot = std::max(-1.0, std::min(1.0, ux1 * ux2 + uy1 * uy2));
+  const double angle = std::acos(dot);
+  if (!IsFinite(angle) || angle <= 1e-12 || std::abs(3.14159265358979323846 - angle) <= 1e-12) {
+    return std::nullopt;
+  }
+
+  const double half_angle = angle * 0.5;
+  const double tangent_distance = fillet.radius() / std::tan(half_angle);
+  const double center_distance = fillet.radius() / std::sin(half_angle);
+  if (!IsFinite(tangent_distance) || !IsFinite(center_distance) ||
+      tangent_distance <= 0.0 || tangent_distance > length1 + 1e-9 ||
+      tangent_distance > length2 + 1e-9) {
+    return std::nullopt;
+  }
+
+  const double bx = ux1 + ux2;
+  const double by = uy1 + uy2;
+  const double bisector_length = std::sqrt(bx * bx + by * by);
+  if (bisector_length <= 1e-12) {
+    return std::nullopt;
+  }
+
+  return FilletIntentGeometry{
+      .point1_x = corner.x + ux1 * tangent_distance,
+      .point1_y = corner.y + uy1 * tangent_distance,
+      .point2_x = corner.x + ux2 * tangent_distance,
+      .point2_y = corner.y + uy2 * tangent_distance,
+      .center_x = corner.x + (bx / bisector_length) * center_distance,
+      .center_y = corner.y + (by / bisector_length) * center_distance,
+  };
+}
+
+void AppendSolvedPoint(cccad::solver::v1::SketchSolution* solution,
+                       const std::string& id,
+                       double x,
+                       double y) {
+  auto* solved = solution->add_entities();
+  solved->set_id(id);
+  solved->mutable_point()->set_x(x);
+  solved->mutable_point()->set_y(y);
+}
+
+void AppendFilletIntentSolution(const cccad::solver::v1::ApplyFilletIntent& fillet,
+                                const FilletIntentGeometry& geometry,
+                                cccad::solver::v1::SketchSolution* solution) {
+  AppendSolvedPoint(solution, fillet.created_point1_id(), geometry.point1_x, geometry.point1_y);
+  AppendSolvedPoint(solution, fillet.created_point2_id(), geometry.point2_x, geometry.point2_y);
+  AppendSolvedPoint(solution, fillet.created_center_point_id(), geometry.center_x,
+                    geometry.center_y);
+  auto* arc = solution->add_entities();
+  arc->set_id(fillet.created_arc_id());
+  arc->mutable_arc()->set_center_point_id(fillet.created_center_point_id());
+  arc->mutable_arc()->set_start_point_id(fillet.created_point1_id());
+  arc->mutable_arc()->set_end_point_id(fillet.created_point2_id());
+  arc->mutable_arc()->set_clockwise(fillet.clockwise());
+  arc->mutable_arc()->set_branch(cccad::solver::v1::ARC_BRANCH_MINOR);
 }
 
 void SortRepeatedStrings(google::protobuf::RepeatedPtrField<std::string>* values) {
@@ -213,13 +325,42 @@ void SketchSolverEngine::ApplyIntent(
                                                affected_component.entity_ids,
                                                affected_component.constraint_ids,
                                                affected_component.dimension_ids);
+  std::optional<FilletIntentGeometry> fillet_geometry;
+  if (request.intent().kind_case() == cccad::solver::v1::UserIntent::kApplyFillet) {
+    fillet_geometry =
+        BuildFilletIntentGeometry(request.intent().apply_fillet(), solve_result.model);
+    if (!fillet_geometry.has_value()) {
+      AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                       "fillet intent requires two non-collinear lines sharing the corner point "
+                       "and a radius that fits both line segments",
+                       {request.intent().apply_fillet().line1_id(),
+                        request.intent().apply_fillet().line2_id(),
+                        request.intent().apply_fillet().corner_point_id()},
+                       {}, {}, &validation);
+      *response->add_diagnostics() = validation.diagnostics.back();
+      response->set_status(SOLVE_STATUS_INCONSISTENT);
+      return;
+    }
+  }
+
   WriteSolverSolution(request.model(), solve_result.model, response->mutable_solution());
+  if (fillet_geometry.has_value()) {
+    AppendFilletIntentSolution(request.intent().apply_fillet(), *fillet_geometry,
+                               response->mutable_solution());
+  }
   for (const auto& diagnostic : solve_result.residual_diagnostics) {
     *response->add_diagnostics() = diagnostic;
   }
 
   for (const auto& entity_id : affected_component.entity_ids) {
     response->add_affected_entity_ids(entity_id);
+  }
+  if (request.intent().kind_case() == cccad::solver::v1::UserIntent::kApplyFillet) {
+    const auto& fillet = request.intent().apply_fillet();
+    response->add_affected_entity_ids(fillet.created_point1_id());
+    response->add_affected_entity_ids(fillet.created_point2_id());
+    response->add_affected_entity_ids(fillet.created_center_point_id());
+    response->add_affected_entity_ids(fillet.created_arc_id());
   }
   SortRepeatedStrings(response->mutable_affected_entity_ids());
 
@@ -775,6 +916,17 @@ void SketchSolverEngine::ValidateIntent(const cccad::solver::v1::UserIntent& int
                            message, {entity_id}, {}, {}, result);
         }
       };
+  auto require_distinct_new_entity_ids =
+      [&](std::vector<std::string> ids, std::string_view message) {
+        std::sort(ids.begin(), ids.end());
+        for (std::size_t index = 1; index < ids.size(); ++index) {
+          if (!ids[index].empty() && ids[index] == ids[index - 1]) {
+            AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
+                             message, {ids[index]}, {}, {}, result);
+            return;
+          }
+        }
+      };
   auto require_existing_entity_id =
       [&](const std::string& entity_id, std::string_view message) {
         if (!Contains(entity_ids, entity_id)) {
@@ -1040,15 +1192,18 @@ void SketchSolverEngine::ValidateIntent(const cccad::solver::v1::UserIntent& int
                             "fillet intent created point ids must be new entity ids");
       require_new_entity_id(fillet.created_point2_id(),
                             "fillet intent created point ids must be new entity ids");
+      require_new_entity_id(fillet.created_center_point_id(),
+                            "fillet intent created center point id must be a new entity id");
       require_new_entity_id(fillet.created_arc_id(),
                             "fillet intent created arc id must be a new entity id");
+      require_distinct_new_entity_ids(
+          {fillet.created_point1_id(), fillet.created_point2_id(),
+           fillet.created_center_point_id(), fillet.created_arc_id()},
+          "fillet intent created entity ids must be distinct");
       if (!IsFinite(fillet.radius()) || fillet.radius() <= 0.0) {
         AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "invalid_intent",
                          "fillet intent radius must be finite and positive", {}, {}, {}, result);
       }
-      AppendDiagnostic(SOLVER_DIAGNOSTIC_LEVEL_ERROR, "unsupported_intent",
-                       "fillet intent is not implemented by the solver yet", {}, {}, {},
-                       result);
       break;
     }
     case cccad::solver::v1::UserIntent::kApplyChamfer: {

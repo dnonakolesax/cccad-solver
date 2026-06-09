@@ -273,10 +273,11 @@ message ApplyFilletIntent {
   string corner_point_id = 4;
   string created_point1_id = 5;
   string created_point2_id = 6;
-  string created_arc_id = 7;
-  double radius = 8;
-  bool trim = 9;
-  bool clockwise = 10;
+  string created_center_point_id = 7;
+  string created_arc_id = 8;
+  double radius = 9;
+  bool trim = 10;
+  bool clockwise = 11;
 }
 
 message ApplyChamferIntent {
