@@ -1,8 +1,12 @@
 #include "cccad/solver/constraint_solver.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 #include <optional>
+#include <ostream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -35,6 +39,23 @@ bool IsReservedReferenceEntityId(const std::string& entity_id) {
 
 bool IsReservedReferenceEntity(const cccad::solver::v1::Entity& entity) {
   return IsReservedReferenceEntityId(entity.id());
+}
+
+bool DebugValueEnabled(const char* value) {
+  if (value == nullptr || *value == '\0') return false;
+  std::string normalized(value);
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return normalized == "1" || normalized == "true" || normalized == "debug" ||
+         normalized == "trace";
+}
+
+bool ProfileDebugLoggingEnabled() {
+  // if (DebugValueEnabled(std::getenv("SOLVER_DEBUG_PROFILE_LOGS"))) return true;
+  // return DebugValueEnabled(std::getenv("SOLVER_LOG_LEVEL"))
+  //;
+  return true;
 }
 
 double Square(double value) { return value * value; }
@@ -407,6 +428,137 @@ struct ProfileData {
   double area = 0.0;
 };
 
+template <typename T>
+std::vector<std::string> SortedModelIds(const std::unordered_map<std::string, T>& values) {
+  std::vector<std::string> ids;
+  ids.reserve(values.size());
+  for (const auto& [id, unused] : values) {
+    (void)unused;
+    ids.push_back(id);
+  }
+  std::sort(ids.begin(), ids.end());
+  return ids;
+}
+
+void LogProfilePoint(std::ostream& out, const ProfilePoint& point) {
+  out << "{x:" << point.x << ",y:" << point.y << "}";
+}
+
+void LogStringList(std::ostream& out, const std::vector<std::string>& values) {
+  out << "[";
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    if (index > 0) out << ",";
+    out << '"' << values[index] << '"';
+  }
+  out << "]";
+}
+
+void LogProfileLoop(std::ostream& out, const ProfileLoopData& loop) {
+  out << "{entity_ids:";
+  LogStringList(out, loop.entity_ids);
+  out << ",area:" << loop.area << ",is_circle:" << (loop.is_circle ? "true" : "false");
+  if (loop.is_circle) {
+    out << ",center:";
+    LogProfilePoint(out, loop.center);
+    out << ",radius:" << loop.radius;
+  } else {
+    out << ",vertices:[";
+    for (std::size_t index = 0; index < loop.vertices.size(); ++index) {
+      if (index > 0) out << ",";
+      LogProfilePoint(out, loop.vertices[index]);
+    }
+    out << "]";
+  }
+  out << "}";
+}
+
+void LogProfileLoops(const char* label, const std::vector<ProfileLoopData>& loops) {
+  if (!ProfileDebugLoggingEnabled()) return;
+  std::clog << "[solver.profile.debug] " << label << " count=" << loops.size() << " loops=[";
+  for (std::size_t index = 0; index < loops.size(); ++index) {
+    if (index > 0) std::clog << ",";
+    LogProfileLoop(std::clog, loops[index]);
+  }
+  std::clog << "]\n";
+}
+
+void LogProfileInput(const SolverModel& model) {
+  if (!ProfileDebugLoggingEnabled()) return;
+
+  std::clog << "[solver.profile.debug] input"
+            << " points=" << model.points.size() << " lines=" << model.lines.size()
+            << " circles=" << model.circles.size() << " arcs=" << model.arcs.size() << "\n";
+
+  std::clog << "[solver.profile.debug] input.points=[";
+  const std::vector<std::string> point_ids = SortedModelIds(model.points);
+  for (std::size_t index = 0; index < point_ids.size(); ++index) {
+    if (index > 0) std::clog << ",";
+    const SolverPoint& point = model.points.at(point_ids[index]);
+    std::clog << "{id:\"" << point.id << "\",x:" << point.x << ",y:" << point.y
+              << ",x0:" << point.x0 << ",y0:" << point.y0
+              << ",lock_x:" << (point.lock_x ? "true" : "false")
+              << ",lock_y:" << (point.lock_y ? "true" : "false") << "}";
+  }
+  std::clog << "]\n";
+
+  std::clog << "[solver.profile.debug] input.lines=[";
+  const std::vector<std::string> line_ids = SortedModelIds(model.lines);
+  for (std::size_t index = 0; index < line_ids.size(); ++index) {
+    if (index > 0) std::clog << ",";
+    const SolverLine& line = model.lines.at(line_ids[index]);
+    std::clog << "{id:\"" << line.id << "\",start_point_id:\"" << line.start_point_id
+              << "\",end_point_id:\"" << line.end_point_id << "\"}";
+  }
+  std::clog << "]\n";
+
+  std::clog << "[solver.profile.debug] input.circles=[";
+  const std::vector<std::string> circle_ids = SortedModelIds(model.circles);
+  for (std::size_t index = 0; index < circle_ids.size(); ++index) {
+    if (index > 0) std::clog << ",";
+    const SolverCircle& circle = model.circles.at(circle_ids[index]);
+    std::clog << "{id:\"" << circle.id << "\",center_point_id:\""
+              << circle.center_point_id << "\",radius:" << circle.radius
+              << ",radius0:" << circle.radius0
+              << ",lock_radius:" << (circle.lock_radius ? "true" : "false") << "}";
+  }
+  std::clog << "]\n";
+
+  std::clog << "[solver.profile.debug] input.arcs=[";
+  const std::vector<std::string> arc_ids = SortedModelIds(model.arcs);
+  for (std::size_t index = 0; index < arc_ids.size(); ++index) {
+    if (index > 0) std::clog << ",";
+    const SolverArc& arc = model.arcs.at(arc_ids[index]);
+    std::clog << "{id:\"" << arc.id << "\",center_point_id:\"" << arc.center_point_id
+              << "\",start_point_id:\"" << arc.start_point_id << "\",end_point_id:\""
+              << arc.end_point_id << "\"}";
+  }
+  std::clog << "]\n";
+}
+
+void LogProfilesOutput(const std::vector<ProfileData>& profiles) {
+  if (!ProfileDebugLoggingEnabled()) return;
+  std::clog << "[solver.profile.debug] output.profiles count=" << profiles.size()
+            << " profiles=[";
+  for (std::size_t index = 0; index < profiles.size(); ++index) {
+    if (index > 0) std::clog << ",";
+    const ProfileData& profile = profiles[index];
+    std::clog << "{id:\"profile_" << (index + 1) << "\",outer_loop:";
+    LogProfileLoop(std::clog, profile.outer_loop);
+    std::clog << ",inner_loops:[";
+    for (std::size_t inner_index = 0; inner_index < profile.inner_loops.size(); ++inner_index) {
+      if (inner_index > 0) std::clog << ",";
+      LogProfileLoop(std::clog, profile.inner_loops[inner_index]);
+    }
+    std::clog << "],area:" << profile.area
+              << ",valid_for_extrude:"
+              << (profile.area > kDefaultTolerance && !profile.outer_loop.entity_ids.empty()
+                      ? "true"
+                      : "false")
+              << "}";
+  }
+  std::clog << "]\n";
+}
+
 double SignedPolygonArea(const std::vector<ProfilePoint>& vertices) {
   if (vertices.size() < 3) return 0.0;
   double sum = 0.0;
@@ -554,6 +706,7 @@ std::vector<ProfileLoopData> BuildLineProfileLoops(const SolverModel& model) {
     RotateLoopToSmallestEntityId(&loop);
     loops.push_back(std::move(loop));
   }
+  LogProfileLoops("line_loop_output", loops);
   return loops;
 }
 
@@ -576,10 +729,12 @@ std::vector<ProfileLoopData> BuildCircleProfileLoops(const SolverModel& model) {
   std::sort(loops.begin(), loops.end(), [](const ProfileLoopData& lhs, const ProfileLoopData& rhs) {
     return lhs.entity_ids.front() < rhs.entity_ids.front();
   });
+  LogProfileLoops("circle_loop_output", loops);
   return loops;
 }
 
 std::vector<ProfileData> BuildProfiles(const SolverModel& model) {
+  LogProfileInput(model);
   std::vector<ProfileLoopData> loops = BuildLineProfileLoops(model);
   std::vector<ProfileLoopData> circle_loops = BuildCircleProfileLoops(model);
   loops.insert(loops.end(), circle_loops.begin(), circle_loops.end());
@@ -587,6 +742,7 @@ std::vector<ProfileData> BuildProfiles(const SolverModel& model) {
     if (lhs.area != rhs.area) return lhs.area > rhs.area;
     return lhs.entity_ids.front() < rhs.entity_ids.front();
   });
+  LogProfileLoops("sorted_candidate_loop_input", loops);
 
   std::vector<int> parent(loops.size(), -1);
   for (std::size_t index = 0; index < loops.size(); ++index) {
@@ -598,6 +754,16 @@ std::vector<ProfileData> BuildProfiles(const SolverModel& model) {
         parent[index] = static_cast<int>(candidate);
       }
     }
+  }
+  if (ProfileDebugLoggingEnabled()) {
+    std::clog << "[solver.profile.debug] loop_parent_output=[";
+    for (std::size_t index = 0; index < parent.size(); ++index) {
+      if (index > 0) std::clog << ",";
+      std::clog << "{loop_index:" << index << ",entity_ids:";
+      LogStringList(std::clog, loops[index].entity_ids);
+      std::clog << ",parent_index:" << parent[index] << "}";
+    }
+    std::clog << "]\n";
   }
 
   std::vector<ProfileData> profiles;
@@ -629,6 +795,7 @@ std::vector<ProfileData> BuildProfiles(const SolverModel& model) {
   std::sort(profiles.begin(), profiles.end(), [](const ProfileData& lhs, const ProfileData& rhs) {
     return lhs.outer_loop.entity_ids.front() < rhs.outer_loop.entity_ids.front();
   });
+  LogProfilesOutput(profiles);
   return profiles;
 }
 
