@@ -1289,6 +1289,54 @@ void ChamferedLineCircuitReturnsProfileWithCornerHelpers() {
   Require(profile.valid_for_extrude(), "chamfered outer profile should be valid for extrude");
 }
 
+void FilletedLineCircuitReturnsArcProfile() {
+  SolveRequest request;
+  auto add_point = [&](const char* id, double x, double y) {
+    auto* point = request.mutable_model()->add_entities();
+    point->set_id(id);
+    point->mutable_point()->set_x(x);
+    point->mutable_point()->set_y(y);
+  };
+  auto add_line = [&](const char* id, const char* start_id, const char* end_id) {
+    auto* line = request.mutable_model()->add_entities();
+    line->set_id(id);
+    line->mutable_line()->set_start_point_id(start_id);
+    line->mutable_line()->set_end_point_id(end_id);
+  };
+
+  add_point("p1", 0.0, 0.0);
+  add_point("p2", 10.0, 0.0);
+  add_point("p3", 10.0, 10.0);
+  add_point("p4", 0.0, 10.0);
+  add_point("fillet_start", 1.0, 0.0);
+  add_point("fillet_end", 0.0, 1.0);
+  add_point("fillet_center", 1.0, 1.0);
+  add_line("bottom", "p1", "p2");
+  add_line("right", "p2", "p3");
+  add_line("top", "p3", "p4");
+  add_line("left", "p4", "p1");
+  auto* arc = request.mutable_model()->add_entities();
+  arc->set_id("arc");
+  arc->mutable_arc()->set_center_point_id("fillet_center");
+  arc->mutable_arc()->set_start_point_id("fillet_start");
+  arc->mutable_arc()->set_end_point_id("fillet_end");
+
+  SolveResponse response;
+  SketchSolverEngine{}.Solve(request, &response);
+
+  Require(response.solution().profiles_size() == 1,
+          "filleted rectangle should return one rounded profile");
+  const auto& profile = response.solution().profiles(0);
+  bool has_arc = false;
+  for (const std::string& entity_id : profile.outer_loop().entity_ids()) {
+    if (entity_id == "arc") has_arc = true;
+  }
+  Require(has_arc, "filleted profile should include the arc boundary");
+  Require(std::abs(profile.area() - (99.0 + std::acos(-1.0) * 0.25)) < 1e-8,
+          "filleted profile should report arc-adjusted area");
+  Require(profile.valid_for_extrude(), "filleted profile should be valid for extrude");
+}
+
 void ReservedReferenceEntitiesDoNotInvalidateSolve() {
   SolveRequest request;
   auto add_point = [&](const char* id, double x, double y) {
@@ -1939,6 +1987,7 @@ int main() {
   SolvedLineIsReturned();
   ClosedLineCircuitReturnsExtrudableProfile();
   ChamferedLineCircuitReturnsProfileWithCornerHelpers();
+  FilletedLineCircuitReturnsArcProfile();
   ReservedReferenceEntitiesDoNotInvalidateSolve();
   NestedClosedLineCircuitsReturnInnerLoop();
   AnalyzeReturnsRealComponents();

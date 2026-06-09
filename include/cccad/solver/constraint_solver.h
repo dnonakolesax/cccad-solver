@@ -45,6 +45,8 @@ struct SolverArc {
   std::string center_point_id;
   std::string start_point_id;
   std::string end_point_id;
+  bool clockwise = false;
+  cccad::solver::v1::ArcBranch branch = cccad::solver::v1::ARC_BRANCH_UNSPECIFIED;
 };
 
 struct SolverModel {

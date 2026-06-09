@@ -611,140 +611,332 @@ bool LoopContainsLoop(const ProfileLoopData& outer, const ProfileLoopData& inner
 }
 
 std::vector<ProfileLoopData> BuildLineProfileLoops(const SolverModel& model) {
-  struct LineEdge {
+  struct ProfileEdge {
     std::string id;
     std::string start_point_id;
     std::string end_point_id;
+    bool is_arc = false;
+    double signed_area = 0.0;
   };
-  struct IncidentLine {
-    std::string line_id;
+  struct IncidentEdge {
+    std::size_t edge_index = 0;
     std::string other_point_id;
     double angle = 0.0;
   };
-  struct DirectedLine {
-    std::string line_id;
+  struct DirectedEdge {
+    std::size_t edge_index = 0;
     std::string from_point_id;
     std::string to_point_id;
   };
 
-  std::vector<LineEdge> lines;
-  lines.reserve(model.lines.size());
-  for (const auto& [id, line] : model.lines) {
+  auto point_on_line_t = [&](const SolverLine& line, const std::string& point_id,
+                             double* t) -> bool {
+    const auto start_it = model.points.find(line.start_point_id);
+    const auto end_it = model.points.find(line.end_point_id);
+    const auto point_it = model.points.find(point_id);
+    if (start_it == model.points.end() || end_it == model.points.end() ||
+        point_it == model.points.end()) {
+      return false;
+    }
+    const double dx = end_it->second.x - start_it->second.x;
+    const double dy = end_it->second.y - start_it->second.y;
+    const double length2 = dx * dx + dy * dy;
+    if (length2 <= kMinimumRadius * kMinimumRadius) return false;
+    const double px = point_it->second.x - start_it->second.x;
+    const double py = point_it->second.y - start_it->second.y;
+    const double projected = (px * dx + py * dy) / length2;
+    if (projected < -1e-8 || projected > 1.0 + 1e-8) return false;
+    const double cross = dx * py - dy * px;
+    if (std::abs(cross) > 1e-7 * std::sqrt(length2)) return false;
+    *t = std::max(0.0, std::min(1.0, projected));
+    return true;
+  };
+
+  auto directed_key = [](std::size_t edge_index, const std::string& from_point_id) {
+    return std::to_string(edge_index) + '\n' + from_point_id;
+  };
+  auto skip_key = [](const std::string& line_id, const std::string& point_a_id,
+                     const std::string& point_b_id) {
+    return line_id + '\n' + std::min(point_a_id, point_b_id) + '\n' +
+           std::max(point_a_id, point_b_id);
+  };
+  auto arc_sweep = [&](const SolverArc& arc) {
+    const SolverPoint& center = model.points.at(arc.center_point_id);
+    const SolverPoint& start = model.points.at(arc.start_point_id);
+    const SolverPoint& end = model.points.at(arc.end_point_id);
+    const double start_angle = std::atan2(start.y - center.y, start.x - center.x);
+    const double end_angle = std::atan2(end.y - center.y, end.x - center.x);
+    double sweep = arc.clockwise ? -NormalizePositiveAngle(start_angle - end_angle)
+                                 : NormalizePositiveAngle(end_angle - start_angle);
+    if (arc.branch != cccad::solver::v1::ARC_BRANCH_MAJOR && std::abs(sweep) > kPi) {
+      sweep += sweep > 0.0 ? -kTwoPi : kTwoPi;
+    } else if (arc.branch == cccad::solver::v1::ARC_BRANCH_MAJOR &&
+               std::abs(sweep) < kPi) {
+      sweep += sweep > 0.0 ? kTwoPi : -kTwoPi;
+    }
+    return sweep;
+  };
+  auto arc_area = [&](const SolverArc& arc, double sweep) {
+    const SolverPoint& center = model.points.at(arc.center_point_id);
+    const SolverPoint& start = model.points.at(arc.start_point_id);
+    const double radius = Distance(center.x, center.y, start.x, start.y);
+    const double start_angle = std::atan2(start.y - center.y, start.x - center.x);
+    const double end_angle = start_angle + sweep;
+    return 0.5 * (center.x * radius * (std::sin(end_angle) - std::sin(start_angle)) -
+                  center.y * radius * (std::cos(end_angle) - std::cos(start_angle)) +
+                  radius * radius * sweep);
+  };
+  auto arc_tangent_angle = [&](const SolverArc& arc, bool forward, bool at_start) {
+    const SolverPoint& center = model.points.at(arc.center_point_id);
+    const SolverPoint& point = model.points.at(at_start ? arc.start_point_id : arc.end_point_id);
+    const double angle = std::atan2(point.y - center.y, point.x - center.x);
+    const double sweep = arc_sweep(arc);
+    const bool ccw = forward ? sweep > 0.0 : sweep < 0.0;
+    return std::atan2(ccw ? std::cos(angle) : -std::cos(angle),
+                      ccw ? -std::sin(angle) : std::sin(angle));
+  };
+
+  std::unordered_map<std::string, std::vector<std::pair<double, std::string>>> line_points;
+  for (const auto& [line_id, line] : model.lines) {
     if (line.start_point_id == line.end_point_id) continue;
     if (!model.points.contains(line.start_point_id) || !model.points.contains(line.end_point_id)) {
       continue;
     }
-    lines.push_back({id, line.start_point_id, line.end_point_id});
+    for (const auto& [point_id, unused] : model.points) {
+      (void)unused;
+      double t = 0.0;
+      if (point_on_line_t(line, point_id, &t)) {
+        line_points[line_id].push_back({t, point_id});
+      }
+    }
   }
-  std::sort(lines.begin(), lines.end(),
-            [](const LineEdge& lhs, const LineEdge& rhs) { return lhs.id < rhs.id; });
-
-  std::unordered_map<std::string, std::vector<IncidentLine>> point_to_lines;
-  for (const LineEdge& line : lines) {
-    const SolverPoint& start = model.points.at(line.start_point_id);
-    const SolverPoint& end = model.points.at(line.end_point_id);
-    point_to_lines[line.start_point_id].push_back({
-        .line_id = line.id,
-        .other_point_id = line.end_point_id,
-        .angle = std::atan2(end.y - start.y, end.x - start.x),
-    });
-    point_to_lines[line.end_point_id].push_back({
-        .line_id = line.id,
-        .other_point_id = line.start_point_id,
-        .angle = std::atan2(start.y - end.y, start.x - end.x),
-    });
-  }
-  for (auto& [unused, incident_lines] : point_to_lines) {
+  for (auto& [unused, points] : line_points) {
     (void)unused;
-    std::sort(incident_lines.begin(), incident_lines.end(),
-              [](const IncidentLine& lhs, const IncidentLine& rhs) {
+    std::sort(points.begin(), points.end(), [](const auto& lhs, const auto& rhs) {
+      if (std::abs(lhs.first - rhs.first) > 1e-10) return lhs.first < rhs.first;
+      return lhs.second < rhs.second;
+    });
+    points.erase(std::unique(points.begin(), points.end(),
+                             [](const auto& lhs, const auto& rhs) {
+                               return lhs.second == rhs.second;
+                             }),
+                 points.end());
+  }
+
+  std::unordered_set<std::string> skipped_line_segments;
+  for (const auto& [arc_id, arc] : model.arcs) {
+    (void)arc_id;
+    if (!model.points.contains(arc.center_point_id) ||
+        !model.points.contains(arc.start_point_id) ||
+        !model.points.contains(arc.end_point_id)) {
+      continue;
+    }
+    std::vector<std::string> start_line_ids;
+    std::vector<std::string> end_line_ids;
+    for (const auto& [line_id, line] : model.lines) {
+      double t = 0.0;
+      if (point_on_line_t(line, arc.start_point_id, &t)) start_line_ids.push_back(line_id);
+      if (point_on_line_t(line, arc.end_point_id, &t)) end_line_ids.push_back(line_id);
+    }
+    std::sort(start_line_ids.begin(), start_line_ids.end());
+    std::sort(end_line_ids.begin(), end_line_ids.end());
+    for (const std::string& start_line_id : start_line_ids) {
+      const SolverLine& start_line = model.lines.at(start_line_id);
+      for (const std::string& end_line_id : end_line_ids) {
+        if (start_line_id == end_line_id) continue;
+        const SolverLine& end_line = model.lines.at(end_line_id);
+        std::optional<std::string> corner_point_id;
+        for (const std::string& start_endpoint :
+             {start_line.start_point_id, start_line.end_point_id}) {
+          if (start_endpoint == end_line.start_point_id ||
+              start_endpoint == end_line.end_point_id) {
+            corner_point_id = start_endpoint;
+          }
+        }
+        if (!corner_point_id.has_value()) continue;
+        auto mark_trimmed_segments = [&](const std::string& line_id,
+                                         const std::string& tangent_point_id) {
+          auto points_it = line_points.find(line_id);
+          if (points_it == line_points.end()) return;
+          auto& points = points_it->second;
+          const auto corner_it = std::find_if(points.begin(), points.end(), [&](const auto& item) {
+            return item.second == *corner_point_id;
+          });
+          const auto tangent_it = std::find_if(points.begin(), points.end(), [&](const auto& item) {
+            return item.second == tangent_point_id;
+          });
+          if (corner_it == points.end() || tangent_it == points.end()) return;
+          const std::size_t first = static_cast<std::size_t>(
+              std::min(corner_it, tangent_it) - points.begin());
+          const std::size_t last = static_cast<std::size_t>(
+              std::max(corner_it, tangent_it) - points.begin());
+          for (std::size_t index = first; index < last; ++index) {
+            skipped_line_segments.insert(skip_key(line_id, points[index].second,
+                                                  points[index + 1].second));
+          }
+        };
+        mark_trimmed_segments(start_line_id, arc.start_point_id);
+        mark_trimmed_segments(end_line_id, arc.end_point_id);
+      }
+    }
+  }
+
+  std::vector<ProfileEdge> edges;
+  for (const auto& [line_id, unused_line] : model.lines) {
+    (void)unused_line;
+    auto points_it = line_points.find(line_id);
+    if (points_it == line_points.end()) continue;
+    const auto& points = points_it->second;
+    for (std::size_t index = 1; index < points.size(); ++index) {
+      const std::string& start_point_id = points[index - 1].second;
+      const std::string& end_point_id = points[index].second;
+      if (start_point_id == end_point_id ||
+          skipped_line_segments.contains(skip_key(line_id, start_point_id, end_point_id))) {
+        continue;
+      }
+      const SolverPoint& start = model.points.at(start_point_id);
+      const SolverPoint& end = model.points.at(end_point_id);
+      edges.push_back({.id = line_id,
+                       .start_point_id = start_point_id,
+                       .end_point_id = end_point_id,
+                       .is_arc = false,
+                       .signed_area = 0.5 * (start.x * end.y - end.x * start.y)});
+    }
+  }
+  for (const auto& [arc_id, arc] : model.arcs) {
+    if (!model.points.contains(arc.center_point_id) ||
+        !model.points.contains(arc.start_point_id) ||
+        !model.points.contains(arc.end_point_id)) {
+      continue;
+    }
+    const SolverPoint& center = model.points.at(arc.center_point_id);
+    const SolverPoint& start = model.points.at(arc.start_point_id);
+    const SolverPoint& end = model.points.at(arc.end_point_id);
+    const double radius = Distance(center.x, center.y, start.x, start.y);
+    if (radius <= kMinimumRadius ||
+        std::abs(radius - Distance(center.x, center.y, end.x, end.y)) > 1e-6) {
+      continue;
+    }
+    edges.push_back({.id = arc_id,
+                     .start_point_id = arc.start_point_id,
+                     .end_point_id = arc.end_point_id,
+                     .is_arc = true,
+                     .signed_area = arc_area(arc, arc_sweep(arc))});
+  }
+  std::sort(edges.begin(), edges.end(), [](const ProfileEdge& lhs, const ProfileEdge& rhs) {
+    if (lhs.id != rhs.id) return lhs.id < rhs.id;
+    if (lhs.start_point_id != rhs.start_point_id) return lhs.start_point_id < rhs.start_point_id;
+    return lhs.end_point_id < rhs.end_point_id;
+  });
+
+  std::unordered_map<std::string, std::vector<IncidentEdge>> point_to_edges;
+  for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+    const ProfileEdge& edge = edges[edge_index];
+    const SolverPoint& start = model.points.at(edge.start_point_id);
+    const SolverPoint& end = model.points.at(edge.end_point_id);
+    const SolverArc* arc = edge.is_arc ? &model.arcs.at(edge.id) : nullptr;
+    point_to_edges[edge.start_point_id].push_back({
+        .edge_index = edge_index,
+        .other_point_id = edge.end_point_id,
+        .angle = edge.is_arc ? arc_tangent_angle(*arc, true, true)
+                             : std::atan2(end.y - start.y, end.x - start.x),
+    });
+    point_to_edges[edge.end_point_id].push_back({
+        .edge_index = edge_index,
+        .other_point_id = edge.start_point_id,
+        .angle = edge.is_arc ? arc_tangent_angle(*arc, false, false)
+                             : std::atan2(start.y - end.y, start.x - end.x),
+    });
+  }
+  for (auto& [unused, incident_edges] : point_to_edges) {
+    (void)unused;
+    std::sort(incident_edges.begin(), incident_edges.end(),
+              [](const IncidentEdge& lhs, const IncidentEdge& rhs) {
                 if (lhs.angle != rhs.angle) return lhs.angle < rhs.angle;
-                return lhs.line_id < rhs.line_id;
+                return lhs.edge_index < rhs.edge_index;
               });
   }
 
   std::vector<ProfileLoopData> loops;
-  std::vector<DirectedLine> directed_lines;
-  directed_lines.reserve(lines.size() * 2);
-  for (const LineEdge& line : lines) {
-    directed_lines.push_back({.line_id = line.id,
-                              .from_point_id = line.start_point_id,
-                              .to_point_id = line.end_point_id});
-    directed_lines.push_back({.line_id = line.id,
-                              .from_point_id = line.end_point_id,
-                              .to_point_id = line.start_point_id});
+  std::vector<DirectedEdge> directed_edges;
+  directed_edges.reserve(edges.size() * 2);
+  for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+    directed_edges.push_back({.edge_index = edge_index,
+                              .from_point_id = edges[edge_index].start_point_id,
+                              .to_point_id = edges[edge_index].end_point_id});
+    directed_edges.push_back({.edge_index = edge_index,
+                              .from_point_id = edges[edge_index].end_point_id,
+                              .to_point_id = edges[edge_index].start_point_id});
   }
-  std::sort(directed_lines.begin(), directed_lines.end(),
-            [](const DirectedLine& lhs, const DirectedLine& rhs) {
-              if (lhs.line_id != rhs.line_id) return lhs.line_id < rhs.line_id;
+  std::sort(directed_edges.begin(), directed_edges.end(),
+            [](const DirectedEdge& lhs, const DirectedEdge& rhs) {
+              if (lhs.edge_index != rhs.edge_index) return lhs.edge_index < rhs.edge_index;
               if (lhs.from_point_id != rhs.from_point_id) return lhs.from_point_id < rhs.from_point_id;
               return lhs.to_point_id < rhs.to_point_id;
             });
 
-  auto directed_key = [](const std::string& line_id, const std::string& from_point_id) {
-    return line_id + '\n' + from_point_id;
-  };
-
-  std::unordered_set<std::string> visited_directed_lines;
-  for (const DirectedLine& seed : directed_lines) {
-    const std::string seed_key = directed_key(seed.line_id, seed.from_point_id);
-    if (visited_directed_lines.contains(seed_key)) continue;
+  std::unordered_set<std::string> visited_directed_edges;
+  for (const DirectedEdge& seed : directed_edges) {
+    const std::string seed_key = directed_key(seed.edge_index, seed.from_point_id);
+    if (visited_directed_edges.contains(seed_key)) continue;
 
     ProfileLoopData loop;
-    std::unordered_set<std::string> local_directed_lines;
-    std::string current_line_id = seed.line_id;
+    std::unordered_set<std::string> local_directed_edges;
+    std::size_t current_edge_index = seed.edge_index;
     std::string current_from_point_id = seed.from_point_id;
     std::string current_to_point_id = seed.to_point_id;
+    double signed_area = 0.0;
     for (;;) {
-      const std::string current_key = directed_key(current_line_id, current_from_point_id);
-      if (local_directed_lines.contains(current_key)) break;
-      local_directed_lines.insert(current_key);
-      visited_directed_lines.insert(current_key);
+      const std::string current_key = directed_key(current_edge_index, current_from_point_id);
+      if (local_directed_edges.contains(current_key)) break;
+      local_directed_edges.insert(current_key);
+      visited_directed_edges.insert(current_key);
 
-      loop.entity_ids.push_back(current_line_id);
+      const ProfileEdge& edge = edges[current_edge_index];
+      loop.entity_ids.push_back(edge.id);
       const SolverPoint& point = model.points.at(current_from_point_id);
       loop.vertices.push_back({point.x, point.y});
+      signed_area += current_from_point_id == edge.start_point_id ? edge.signed_area
+                                                                  : -edge.signed_area;
 
-      const auto incident_it = point_to_lines.find(current_to_point_id);
-      if (incident_it == point_to_lines.end() || incident_it->second.empty()) break;
-      const auto& incident_lines = incident_it->second;
+      const auto incident_it = point_to_edges.find(current_to_point_id);
+      if (incident_it == point_to_edges.end() || incident_it->second.empty()) break;
+      const auto& incident_edges = incident_it->second;
       const auto reverse_it =
-          std::find_if(incident_lines.begin(), incident_lines.end(),
-                       [&](const IncidentLine& incident) {
-                         return incident.line_id == current_line_id &&
+          std::find_if(incident_edges.begin(), incident_edges.end(),
+                       [&](const IncidentEdge& incident) {
+                         return incident.edge_index == current_edge_index &&
                                 incident.other_point_id == current_from_point_id;
                        });
-      if (reverse_it == incident_lines.end()) break;
+      if (reverse_it == incident_edges.end()) break;
       const std::size_t reverse_index =
-          static_cast<std::size_t>(reverse_it - incident_lines.begin());
+          static_cast<std::size_t>(reverse_it - incident_edges.begin());
       const std::size_t next_index =
-          (reverse_index + incident_lines.size() - 1) % incident_lines.size();
-      const IncidentLine& next = incident_lines[next_index];
+          (reverse_index + incident_edges.size() - 1) % incident_edges.size();
+      const IncidentEdge& next = incident_edges[next_index];
       current_from_point_id = current_to_point_id;
       current_to_point_id = next.other_point_id;
-      current_line_id = next.line_id;
+      current_edge_index = next.edge_index;
 
-      if (current_line_id == seed.line_id && current_from_point_id == seed.from_point_id &&
+      if (current_edge_index == seed.edge_index && current_from_point_id == seed.from_point_id &&
           current_to_point_id == seed.to_point_id) {
         break;
       }
     }
-    if (current_line_id != seed.line_id || current_from_point_id != seed.from_point_id ||
+    if (current_edge_index != seed.edge_index || current_from_point_id != seed.from_point_id ||
         current_to_point_id != seed.to_point_id || loop.entity_ids.size() < 3) {
       continue;
     }
 
-    const double signed_area = SignedPolygonArea(loop.vertices);
     if (signed_area <= kDefaultTolerance) continue;
     loop.area = signed_area;
-    if (loop.area <= kDefaultTolerance) continue;
     RotateLoopToSmallestEntityId(&loop);
     loops.push_back(std::move(loop));
   }
   std::sort(loops.begin(), loops.end(), [](const ProfileLoopData& lhs, const ProfileLoopData& rhs) {
     return lhs.entity_ids.front() < rhs.entity_ids.front();
   });
-  LogProfileLoops("line_loop_output", loops);
+  LogProfileLoops("curve_loop_output", loops);
   return loops;
 }
 
@@ -1663,6 +1855,8 @@ SolverModel BuildSolverModel(const cccad::solver::v1::SketchModel& model) {
         arc.center_point_id = entity.arc().center_point_id();
         arc.start_point_id = entity.arc().start_point_id();
         arc.end_point_id = entity.arc().end_point_id();
+        arc.clockwise = entity.arc().clockwise();
+        arc.branch = entity.arc().branch();
         result.arcs.emplace(arc.id, std::move(arc));
         break;
       }
