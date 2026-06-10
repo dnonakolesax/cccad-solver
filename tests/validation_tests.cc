@@ -1337,76 +1337,6 @@ void FilletedLineCircuitReturnsArcProfile() {
   Require(profile.valid_for_extrude(), "filleted profile should be valid for extrude");
 }
 
-void RoundedRectangleWithRawMajorArcAnglesExportsMinorArcDirections() {
-  SolveRequest request;
-  auto add_point = [&](const char* id, double x, double y) {
-    auto* point = request.mutable_model()->add_entities();
-    point->set_id(id);
-    point->mutable_point()->set_x(x);
-    point->mutable_point()->set_y(y);
-  };
-  auto add_line = [&](const char* id, const char* start_id, const char* end_id) {
-    auto* line = request.mutable_model()->add_entities();
-    line->set_id(id);
-    line->mutable_line()->set_start_point_id(start_id);
-    line->mutable_line()->set_end_point_id(end_id);
-  };
-  auto add_arc = [&](const char* id, const char* center_id, const char* start_id,
-                     const char* end_id) {
-    auto* arc = request.mutable_model()->add_entities();
-    arc->set_id(id);
-    arc->mutable_arc()->set_center_point_id(center_id);
-    arc->mutable_arc()->set_start_point_id(start_id);
-    arc->mutable_arc()->set_end_point_id(end_id);
-    arc->mutable_arc()->set_clockwise(false);
-  };
-
-  add_point("bottom_left", -3.0, -3.0);
-  add_point("bottom_right", 3.0, -3.0);
-  add_point("top_right", 3.0, 3.0);
-  add_point("top_left", -3.0, 3.0);
-  add_point("bl_arc_start", -2.0, -3.0);
-  add_point("bl_arc_end", -3.0, -2.0);
-  add_point("bl_arc_center", -2.0, -2.0);
-  add_point("tr_arc_start", 2.0, 3.0);
-  add_point("tr_arc_end", 3.0, 2.0);
-  add_point("tr_arc_center", 2.0, 2.0);
-  add_point("hole_center", 0.0, 0.0);
-
-  add_line("rectangle-line-2", "bottom_right", "bottom_left");
-  add_line("rectangle-line-1", "top_right", "bottom_right");
-  add_line("rectangle-line-0", "top_left", "top_right");
-  add_line("rectangle-line-3", "bottom_left", "top_left");
-  add_arc("bottom-left-fillet", "bl_arc_center", "bl_arc_start", "bl_arc_end");
-  add_arc("top-right-fillet", "tr_arc_center", "tr_arc_start", "tr_arc_end");
-  auto* circle = request.mutable_model()->add_entities();
-  circle->set_id("inner-circle");
-  circle->mutable_circle()->set_center_point_id("hole_center");
-  circle->mutable_circle()->set_radius(1.0);
-
-  SolveResponse response;
-  SketchSolverEngine{}.Solve(request, &response);
-
-  Require(response.solution().profiles_size() == 1,
-          "rounded rectangle with a circular hole should return one profile");
-  const auto& profile = response.solution().profiles(0);
-  Require(profile.valid_for_extrude(), "rounded rectangle profile should be valid for extrude");
-  Require(profile.inner_loops_size() == 1, "circle should be returned as an inner loop");
-
-  int normalized_arc_count = 0;
-  for (const auto& entity : response.solution().entities()) {
-    if (entity.id() == "bottom-left-fillet" || entity.id() == "top-right-fillet") {
-      Require(entity.has_arc(), "fillet entities should remain arcs");
-      Require(entity.arc().clockwise(),
-              "minor arc direction should be exported canonically for wire ordering");
-      Require(entity.arc().branch() == cccad::solver::v1::ARC_BRANCH_MINOR,
-              "unspecified branch should be exported as the minor branch used by profiles");
-      ++normalized_arc_count;
-    }
-  }
-  Require(normalized_arc_count == 2, "both fillet arcs should be present in the solution");
-}
-
 void ReservedReferenceEntitiesDoNotInvalidateSolve() {
   SolveRequest request;
   auto add_point = [&](const char* id, double x, double y) {
@@ -2058,7 +1988,6 @@ int main() {
   ClosedLineCircuitReturnsExtrudableProfile();
   ChamferedLineCircuitReturnsProfileWithCornerHelpers();
   FilletedLineCircuitReturnsArcProfile();
-  RoundedRectangleWithRawMajorArcAnglesExportsMinorArcDirections();
   ReservedReferenceEntitiesDoNotInvalidateSolve();
   NestedClosedLineCircuitsReturnInnerLoop();
   AnalyzeReturnsRealComponents();

@@ -80,20 +80,6 @@ double NormalizeSignedAngle(double value) {
   return normalized;
 }
 
-double ArcSweepFromAngles(double start_angle,
-                          double end_angle,
-                          bool clockwise,
-                          cccad::solver::v1::ArcBranch branch) {
-  double sweep = clockwise ? -NormalizePositiveAngle(start_angle - end_angle)
-                           : NormalizePositiveAngle(end_angle - start_angle);
-  if (branch != cccad::solver::v1::ARC_BRANCH_MAJOR && std::abs(sweep) > kPi) {
-    sweep += sweep > 0.0 ? -kTwoPi : kTwoPi;
-  } else if (branch == cccad::solver::v1::ARC_BRANCH_MAJOR && std::abs(sweep) < kPi) {
-    sweep += sweep > 0.0 ? kTwoPi : -kTwoPi;
-  }
-  return sweep;
-}
-
 double ClampUnit(double value) { return std::max(-1.0, std::min(1.0, value)); }
 
 struct LineGeometry {
@@ -680,7 +666,15 @@ std::vector<ProfileLoopData> BuildLineProfileLoops(const SolverModel& model) {
     const SolverPoint& end = model.points.at(arc.end_point_id);
     const double start_angle = std::atan2(start.y - center.y, start.x - center.x);
     const double end_angle = std::atan2(end.y - center.y, end.x - center.x);
-    return ArcSweepFromAngles(start_angle, end_angle, arc.clockwise, arc.branch);
+    double sweep = arc.clockwise ? -NormalizePositiveAngle(start_angle - end_angle)
+                                 : NormalizePositiveAngle(end_angle - start_angle);
+    if (arc.branch != cccad::solver::v1::ARC_BRANCH_MAJOR && std::abs(sweep) > kPi) {
+      sweep += sweep > 0.0 ? -kTwoPi : kTwoPi;
+    } else if (arc.branch == cccad::solver::v1::ARC_BRANCH_MAJOR &&
+               std::abs(sweep) < kPi) {
+      sweep += sweep > 0.0 ? kTwoPi : -kTwoPi;
+    }
+    return sweep;
   };
   auto arc_area = [&](const SolverArc& arc, double sweep) {
     const SolverPoint& center = model.points.at(arc.center_point_id);
@@ -2253,28 +2247,6 @@ void WriteSolverSolution(const cccad::solver::v1::SketchModel& proto_model,
         solved->mutable_arc()->set_end_point_id(entity->arc().end_point_id());
         solved->mutable_arc()->set_clockwise(entity->arc().clockwise());
         solved->mutable_arc()->set_branch(entity->arc().branch());
-        if (const auto arc_it = model.arcs.find(entity->id()); arc_it != model.arcs.end()) {
-          const SolverArc& arc = arc_it->second;
-          const auto center_it = model.points.find(arc.center_point_id);
-          const auto start_it = model.points.find(arc.start_point_id);
-          const auto end_it = model.points.find(arc.end_point_id);
-          if (center_it != model.points.end() && start_it != model.points.end() &&
-              end_it != model.points.end()) {
-            const double start_angle =
-                std::atan2(start_it->second.y - center_it->second.y,
-                           start_it->second.x - center_it->second.x);
-            const double end_angle =
-                std::atan2(end_it->second.y - center_it->second.y,
-                           end_it->second.x - center_it->second.x);
-            const double sweep =
-                ArcSweepFromAngles(start_angle, end_angle, arc.clockwise, arc.branch);
-            solved->mutable_arc()->set_clockwise(sweep < 0.0);
-            solved->mutable_arc()->set_branch(
-                arc.branch == cccad::solver::v1::ARC_BRANCH_UNSPECIFIED
-                    ? cccad::solver::v1::ARC_BRANCH_MINOR
-                    : arc.branch);
-          }
-        }
         break;
       case cccad::solver::v1::Entity::KIND_NOT_SET:
         break;
